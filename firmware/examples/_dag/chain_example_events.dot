@@ -1,0 +1,22 @@
+digraph dag {
+  node [shape=box];
+  rankdir=TB;
+  n0 [label="0: S_WR"];
+  n1 [label="1: S_WR"];
+  n2 [label="2: S_WR"];
+  n3 [label="3: M_RD_DRAM"];
+  n4 [label="4: M_WR"];
+  n5 [label="5: V_RD_DRAM"];
+  n6 [label="6: MV_MUL"];
+  n7 [label="7: V_WR"];
+  n8 [label="8: INST_ISSUE"];
+  n9 [label="9: V_RD"];
+  n10 [label="10: V_WR_DRAM"];
+  n11 [label="11: INST_ISSUE"];
+  n3 -> n4 [label="MRF"];
+  n3 -> n6 [label="MRF"];
+  n5 -> n6 [label="pipe"];
+  n6 -> n7 [label="pipe"];
+  n7 -> n9 [label="VRF[1][0]"];
+  n9 -> n10 [label="pipe"];
+}

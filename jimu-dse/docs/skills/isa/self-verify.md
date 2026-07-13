@@ -1,0 +1,53 @@
+---
+name: self-verify
+description: Self-verify firmware correctness and DRAM improvement
+license: MIT
+---
+
+# Self-Verify Skill
+
+## After Modifying `bert_layer.c`
+
+### 1. Numerical Correctness
+
+```bash
+# Quick check (seq6 only, ~10s)
+python3 -m pytest tests/integration/test_bert_e2e.py --instrument -k seq6 -s --no-header 2>&1 | grep "max_diff"
+```
+
+Expected output:
+```
+  Q: max_diff=0.000000, mean_diff=0.000000
+  K: max_diff=0.000000, mean_diff=0.000000
+  ...
+```
+
+All `max_diff` must be < 0.05. If any fail, the modification produced incorrect numerical output.
+
+### 2. DRAM Traffic
+
+```bash
+# Run the full test suite to check DRAM
+python3 -m pytest tests/integration/test_bert_e2e.py -k seq6 -s 2>&1 | grep -E "DRAM|max_diff|FAILED|PASSED"
+```
+
+Look for the DRAM traffic line — it shows total bytes, V_RD_DRAM ops, etc.
+
+### 3. Full Regression
+
+```bash
+# All 4 configs (seq2 + seq6 for dim2 and dim4)
+python3 -m pytest tests/integration/test_bert_e2e.py -v 2>&1 | tail -10
+```
+
+All 4 must pass.
+
+## Common Failures
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| Q/K max_diff > 0.05 | Wrong VRF bank or offset | Check VREG_MOVE target address |
+| Z max_diff > 0.05 | V.T re-transpose reads wrong V data | Check V cache offset formula |
+| LN1/LN2 max_diff > 0.05 | LayerNorm input wrong | Check residual add dataflow |
+| DRAM not reduced | save_row_tiles still being called | Search for OP_V_WR_DRAM in bert_layer.c |
+| Compile error | SEND_SI instead of SEND_LO for INC | Use correct macro |

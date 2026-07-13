@@ -1,0 +1,30 @@
+digraph micro_op_dag {
+  node [shape=box style=filled];
+  rankdir=TB;
+  n0 [label="0: S_WR\nREG[1]" fillcolor="lightgray"];
+  n1 [label="1: S_WR\nREG[2]" fillcolor="lightgray"];
+  n2 [label="2: S_WR\nREG[3]" fillcolor="lightgray"];
+  n3 [label="3: DRAM_LOAD\nDRAM[0x3000]" fillcolor="lightblue"];
+  n4 [label="4: V_SIGM" fillcolor="white"];
+  n5 [label="5: V_WR" fillcolor="white"];
+  n6 [label="6: DRAM_LOAD\nDRAM[0x3000]" fillcolor="lightblue"];
+  n7 [label="7: VV_MUL (3 instr)" fillcolor="lightyellow"];
+  n8 [label="8: DRAM_LOAD\nDRAM[0x3004]" fillcolor="lightblue"];
+  n9 [label="9: VV_MUL (3 instr)" fillcolor="lightyellow"];
+  n10 [label="10: MAT_LOAD (2 instr)\nDRAM[0xa00]" fillcolor="wheat"];
+  n11 [label="11: MV_MUL (3 instr)" fillcolor="gold"];
+  n12 [label="12: DRAM_LOAD\nDRAM[0x3008]" fillcolor="lightblue"];
+  n13 [label="13: V_RD" fillcolor="white"];
+  n14 [label="14: VV_ADD" fillcolor="white"];
+  n15 [label="15: DRAM_STORE\nDRAM[0x300c]" fillcolor="lightblue"];
+  n16 [label="16: INST_ISSUE" fillcolor="white"];
+  n3 -> n5 [label="('pipe',)"];
+  n5 -> n7 [label="VRF[1][0]"];
+  n6 -> n7 [label="('pipe',)"];
+  n7 -> n9 [label="VRF[1][0]"];
+  n8 -> n9 [label="('pipe',)"];
+  n9 -> n11 [label="VRF[5][0], ('pipe',)"];
+  n10 -> n11 [label="MRF"];
+  n11 -> n13 [label="VRF[1][0]"];
+  n12 -> n15 [label="('pipe',)"];
+}

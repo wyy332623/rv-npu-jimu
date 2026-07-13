@@ -1,0 +1,16 @@
+digraph micro_op_dag {
+  node [shape=box style=filled];
+  rankdir=TB;
+  n0 [label="0: S_WR\nREG[1]" fillcolor="lightgray"];
+  n1 [label="1: S_WR\nREG[2]" fillcolor="lightgray"];
+  n2 [label="2: S_WR\nREG[3]" fillcolor="lightgray"];
+  n3 [label="3: MAT_LOAD (2 instr)\nDRAM[0x400]" fillcolor="wheat"];
+  n4 [label="4: MV_MUL (3 instr)" fillcolor="gold"];
+  n5 [label="5: INST_ISSUE" fillcolor="white"];
+  n6 [label="6: VV_ADD (3 instr)" fillcolor="lightyellow"];
+  n7 [label="7: DRAM_STORE\nDRAM[0x2100]" fillcolor="lightblue"];
+  n8 [label="8: INST_ISSUE" fillcolor="white"];
+  n3 -> n4 [label="MRF"];
+  n4 -> n6 [label="VRF[1][0], ('pipe',)"];
+  n6 -> n7 [label="('pipe',)"];
+}

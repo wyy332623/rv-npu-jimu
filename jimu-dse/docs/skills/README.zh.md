@@ -1,47 +1,43 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
-
 # NPU 优化技能库
 
-此目录包含闭路FW- HW 的技能定义
-合作优化系统。 每个技能都描述了优化模式
-代理可以申请 NPU 固件。
+本目录包含固件-硬件闭环协同优化系统的技能定义。每个技能描述一种 Agent 可以应用于 NPU 固件的优化模式。
 
 ## 目录结构
 
-```
+```text
 skills/
-  isa/             # Instruction-level optimizations
-    inc_folding    # Fold V_WR+V_RD into INC variants
-  fusion/          # Operator fusion optimizations
-    (planned)
-  tiling/          # Loop tiling and tile configuration
-    (planned)
-  compensation/    # Intentional approximation + compensation
-    (planned)
+  isa/             # 指令级优化
+    inc_folding    # 将 V_WR + V_RD 折叠为 INC 变体
+  fusion/          # 算子融合优化
+    （计划中）
+  tiling/          # 循环分块和 tile 配置
+    （计划中）
+  compensation/    # 有意近似与误差补偿
+    （计划中）
 ```
 
 ## 技能格式
 
-每种技能都是YAML文件,其中:
+每个技能都是一个 YAML 文件，包含：
 
-- ** 名称**:唯一标识符
-- ** 版本**:Semver
-- ** 类别**: 技能分类
-- **触发**:激活技能的模式
-- ** 先决条件**: 适用前必须具备的条件
-- ** 转换**: XQZPROT000XQZ代码转换
-- ** 成本 模型**: 预期节余
-- ** 验证**: 如何核实正确性
+- **name**：唯一标识符
+- **version**：语义化版本号
+- **category**：技能分类
+- **trigger**：激活技能的模式
+- **preconditions**：应用前必须满足的条件
+- **transformation**：变换前后的代码转换
+- **cost_model**：预期节省量
+- **validation**：正确性验证方法
 
-## 使用量
+## 使用方式
 
 ```bash
-# Apply a skill to the current firmware
+# 将 inc_folding 技能应用到当前固件
 pi -p "Apply inc_folding skill to jimu-dse/docs/skills/isa/inc_folding.yaml on firmware/bert/bert_layer.c"
 ```
 
 ## 状态
 
-|技能|版本|状态|DRAM 保存|
-|-------|---------|--------|-------------|
-|内存( C)| 1.0.0 |草案|传统发展|
+| 技能 | 版本 | 状态 | DRAM 节省 |
+|------|------|------|-----------|
+| inc_folding | 1.0.0 | 草稿 | 待定 |

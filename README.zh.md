@@ -1,80 +1,73 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
+# NPU——开源版
 
-# NPU — 开源版
+一个开源的 FPGA 神经网络处理单元（NPU）功能模拟器。
 
-一个开源的FPGA神经处理单元(NPU)模拟器.
+## 架构
 
-## 建筑
-
-```
-RISC-V firmware (.elf) → MiniRV64 ISS → NPU device (Python + C)
+```text
+RISC-V 固件（.elf）→ MiniRV64 指令集模拟器 → NPU 设备（Python + C）
 ```
 
-NPU是一个基于Python的功能仿真器,由RISC-V固件驱动
-指令流。 Python 代码处理指令解码, 注册
-文件,并控制流量。 ** 所有数字计算** (MV MUL,软马克斯,
-层诺姆, GELU, 矢量 QQZPROT000XZ) 授权给一个 C 内核库
-通过型号。
+NPU 是由 RISC-V 固件指令流驱动的 Python 功能模拟器。Python 代码负责指令解码、寄存器文件和控制流程；所有数值计算（MV_MUL、Softmax、LayerNorm、GELU、向量加/减/乘）都通过 ctypes 委托给 C kernel 库（`libnpukernels.so`）。
 
-NumPy 金色的参考文献( XZPROT000XZ) 由
-用于验证模拟器输出的测试,但不属于模拟器本身。
+测试使用独立的 NumPy golden reference 验证模拟器输出；该 reference 不属于模拟器本身。
 
-## 快速启动
+## 快速开始
 
 ```bash
-# 1. Install dependencies
+# 1. 安装依赖
 pip install pytest numpy pyelftools
 
-# 2. Build C kernel library (matrix multiply, GELU, softmax, etc.)
+# 2. 构建 C kernel 库（矩阵乘、GELU、Softmax 等）
 make kernels
 
-# 3. Build RISC-V firmware (bert.elf, BERT encoder layer)
+# 3. 构建 RISC-V 固件（bert.elf，BERT 编码器层）
 make firmware
 
-# 4. Run all tests
+# 4. 运行全部测试
 python3 -m pytest tests/ -v
 ```
 
-预期产出:**所有测试都通过**。
+预期结果：**所有测试通过**。
 
 ## 运行测试
 
 ```bash
-# C kernel tests only (fast, 15 tests)
+# 仅运行 C kernel 测试（较快，共 15 项）
 python3 -m pytest tests/unit/ -m c_kernel -v
 
-# Integration: BERT E2E (parameterized)
+# BERT 端到端集成测试
 python3 -m pytest tests/integration/ -v
 
-# Diagnostic: dispatch audit
+# 诊断：指令分发审计
 python3 -m pytest tests/diagnostic/ -k static -v
 ```
 
 ## 项目结构
 
-```
-kernels/         C compute library (libnpukernels.so)
-firmware/        RISC-V firmware (C, bare-metal ELF → bert.elf)
+```text
+kernels/         C 计算库（libnpukernels.so）
+firmware/        RISC-V 固件（C、裸机 ELF → bert.elf）
 emulator/
-  npu_device_mini.py  NPU device — functional Python emulator
-  trace_recorder.py   MMIO instruction trace recorder
+  npu_device_mini.py  NPU 功能模拟器
+  trace_recorder.py   MMIO 指令跟踪器
 iss/
-  mini_rv64.py        MiniRV64 ISS (RV64IM, pure Python)
-tests/           pytest suite + golden reference generator
-  gen_golden_bert.py   numpy golden reference for BERT encoder layer
-jimu-dse/        Closed-loop firmware optimization pipeline
+  mini_rv64.py        MiniRV64 指令集模拟器（纯 Python）
+tests/           pytest 测试套件和 golden reference 生成器
+  gen_golden_bert.py   BERT 编码器层的 NumPy golden reference
+jimu-dse/        固件闭环优化流程
 ```
 
-## 设计文件
+## 设计文档
 
-|文档|封面|
-|----------|--------|
-|津巴布韦|NPU 架构, ISA, 注册文件|
-|津巴布韦|完整的ISA 参考文献, opcode 表格, 执行模式|
-|津巴布韦|RISC-V 固件,驱动 API|
-|津巴布韦|测试金字塔、固定装置、CI|
-|津巴布韦|工具安装, 构建步骤|
+| 文档 | 内容 |
+|------|------|
+| `docs/architecture.md` | NPU 架构、ISA 和寄存器文件 |
+| `docs/specification.md` | 完整 ISA 参考、opcode 表和执行模型 |
+| `docs/firmware-guide.md` | RISC-V 固件和驱动 API |
+| `docs/test-guide.md` | 测试分层、fixture 和 CI |
+| `docs/build-guide.md` | 工具安装和构建步骤 |
 
 ## 许可证
 
-阿帕奇2.0 (英语).
+Apache 2.0。

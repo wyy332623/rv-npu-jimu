@@ -1,59 +1,53 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
-
 # 测试指南
 
 ## 测试套件
 
-```
+```text
 tests/
-├── gen_golden_bert.py            ← numpy golden reference for BERT encoder layer
-├── conftest.py                   ← pytest config (--instrument flag)
+├── gen_golden_bert.py            ← BERT 编码器层的 NumPy golden reference
+├── conftest.py                   ← pytest 配置（`--instrument` 标志）
 └── integration/
-    └── test_bert_e2e.py          ← BERT E2E: golden → emulator
+    └── test_bert_e2e.py          ← BERT 端到端测试：golden → 模拟器
 ```
 
-## BERT 端到端试验
+## BERT 端到端测试
 
-primary XQ XQ XQ XQ XQ
-多个配置 :
+主测试 `test_bert_e2e_multi_tile` 会在多种配置下验证固件：
 
-|参数|数值|
-|-------|--------|
-|暗号( NATION  DIM)| 2, 4 |
-|隐藏大小| 4, 8 |
-|下列语| 2, 6 |
-|数字标题| 2 |
+| 参数 | 取值 |
+|------|------|
+| dim（NATIVE_DIM） | 2、4 |
+| hidden_size | 4、8 |
+| seq_len | 2、6 |
+| num_head | 2 |
 
-### 验证回合
+### 验证轮次
 
-|圆|后端|它检查什么|
-|-------|---------|----------------|
-|页:1|数字金色|通过 ZPROT000XZ 计算正确性|
-|页:1|模拟器|指令语义, DRAM 排版, opcode 覆盖, 最终输出比较|
+| 轮次 | 后端 | 检查内容 |
+|------|------|----------|
+| **R0** | NumPy golden | 通过 `gen_golden_bert.py` 验证算法正确性 |
+| **R1** | 模拟器 | 指令语义、DRAM 布局、opcode 覆盖率和最终输出对比 |
 
-
-仅检查**最终产出** 数字正确性。
-中间体(Q、K、V、剩余体、LN)没有优化——固件
-可能根据需要将其存储在 VRF 缓存、芯片SRAM 或 DRAM 中。
+数值正确性只检查最终输出。中间结果（Q、K、V、残差、LN）不限定存储方式；固件可以根据需要将它们放在 VRF、片上 SRAM 或 DRAM 中，以便进行优化。
 
 ## 运行测试
 
 ```bash
-# All integration tests
+# 全部集成测试
 python3 -m pytest tests/integration/ -v
 
-# Single configuration
+# 单项配置
 python3 -m pytest tests/integration/test_bert_e2e.py -k "seq6" -v
 
-# With per-operator diagnostics (prints final output comparison only)
+# 启用逐算子诊断（仅打印最终输出对比）
 python3 -m pytest tests/integration/test_bert_e2e.py --instrument -k seq6 -s
 ```
 
-## DRAM 状态
+## DRAM 统计
 
-每次测试都会打印 DRAM 流量 :
+每次测试都会打印 DRAM 流量：
 
-```
+```text
   DRAM traffic (float32 elements):
     V_RD_DRAM: 312 ops × 8 el = 2496 el
     V_WR_DRAM: 12 ops × 8 el = 96 el
@@ -61,10 +55,10 @@ python3 -m pytest tests/integration/test_bert_e2e.py --instrument -k seq6 -s
     Total: 11808 elements (47232 bytes)
 ```
 
-## 承诺前钩
+## 提交前检查
 
 ```bash
 python3 -m pytest tests/integration/test_bert_e2e.py -v
 ```
 
-在承诺确保不倒退之前运行。
+提交前运行该命令，确保没有引入回归。

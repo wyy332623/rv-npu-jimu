@@ -1,97 +1,86 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
-
 ---
-名称: vrf- cache
-描述: 将 QQZPROT000XZ 百分位数数据从 DRAM 圆盘转换到 VRF 缓存
-许可证:麻省理工学院
+name: vrf-cache
+description: 将 K/V tensor 数据从 DRAM 往返重定向到片上 VRF cache
+license: MIT
 ---
 
-# VRF 缓存技能
+# VRF Cache 技能
 
 ## 问题
 
-固件计算每个位置的K=V=Wx+b,通过QQZPROT00000XQZ保存到DRAM,然后通过QZPROT0001XQZ从DRAM重新装入注意码. 当目标VRF具有能力时,这种绕行是不必要的.
+固件会为每个位置计算 `K=V=Wx+b`，通过 `save_row_tiles()` 写入 DRAM，然后在 attention 代码中通过 `V_RD_DRAM` 重新读取。当目标 VRF 容量足够时，这次往返是不必要的。
 
-## VRF 能力
+## VRF 容量
 
-|VRF银行|密码|大小( 要素)|用于|
-|----------|--------|-----------------|----------|
-|MFU INITIAL VRF (中文(简体) ).| 6 | 4096 |GELU 激活(临时)|
-|ADDSUB VRF 0 (英语).| 7 | 1024 |0行积分计|
-|ADDSUB VRF 1 (中文(简体) ).| 8 | 4096 |第1行积分器 + X 缓存|
-|ADDSUB VRF 2 软件| 9 | 64 |第二瓦线(多瓦)|
-|MVM INITIAL VRF (英语).| 5 | 20480 |MVM 输入向量|
-|百万维基月球| 1 | 64 |临时MVM结果|
+| VRF bank | Mem ID | 大小（元素） | 用途 |
+|----------|--------|--------------|------|
+| `MFU_INITIAL_VRF` | 6 | 4096 | GELU 临时结果 |
+| `ADDSUB_VRF_0` | 7 | 1024 | tile 行 0 累加器 |
+| `ADDSUB_VRF_1` | 8 | 4096 | tile 行 1 累加器和 X cache |
+| `ADDSUB_VRF_2` | 9 | 64 | 第二个 tile 行（多 tile） |
+| `MVM_INITIAL_VRF` | 5 | 20480 | MVM 输入向量 |
+| `MULTIPLY_VRF` | 1 | 64 | 临时 MVM 结果 |
 
-对于dim=2,隐藏=4,下游 len=6:
-- K / 位置: 4 个元素(2 瓦排 × 2 dim)
-- 每个职位五:4个要素
-- 每个职位的Q:4个要素
-- 所有6个职位的K+V:共计48个要素
-- MFU INITIAL VRF容量:4096个元素 → **0.6%使用**
+对于 `dim=2`、`hidden=4`、`seq_len=6`：每个位置的 K、V、Q 都是 4 个元素，6 个位置的 K+V 共 48 个元素；`MFU_INITIAL_VRF` 容量为 4096 个元素，仅使用约 **0.6%**。
 
-## 转变
+## 变换
 
-### 第1步:在XZPROT0001Z计算后
+### 步骤 1：在 `mvm_tiled_q()` 计算 K/V 后缓存
 
-在QQZPROT000XZ在QZPROT0001XZ生产K后,固件呼叫QZPROT00002Z写给DRAM. 相反:
+`mvm_tiled_q()` 将 K 放入 `ADDSUB_VRF_0/1` 后，原本调用 `save_row_tiles()` 写入 DRAM。改为使用 VREG_MOVE 将数据复制到 mem 6，并按位置计算偏移：
 
-1. 插入 VREG MOVE 指令,在位置索引偏移处将 QQZPROT000XXZ 复制到 ZPROT0001Z 。
-2. 跳过 QQZPROT000Z —— 数据保留在芯片上
-
-VREG 移动模式 :
 ```c
-// Instead of:
-save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
-               MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
-
-// Use:
 uint32_t cache_offset = pos * num_tiles * NATIVE_DIM;
 SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
-SEND_SI(OP_V_WR, 6, cache_offset);  // MFU_INITIAL_VRF[offset]
+SEND_SI(OP_V_WR, 6, cache_offset);
 SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
 SEND_SI(OP_V_WR, 6, cache_offset + NATIVE_DIM);
 ```
 
-### 步骤2:在注意时从 VRF 装入 XZPROT000XZ
+跳过 `save_row_tiles()`，使数据保留在片上。
 
-在ZPROT000XXZ中,K.T瓦的建筑用途是:
+### 步骤 2：attention 中从 VRF 读取 K/V
+
+K.T tile 原本使用：
+
 ```c
 SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
 ```
 
-改为VRF:
+改为：
+
 ```c
 uint32_t cache_offset = p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
-SEND_SI(OP_V_RD, 6, cache_offset);  // MFU_INITIAL_VRF[offset]
+SEND_SI(OP_V_RD, 6, cache_offset);
 ```
 
-对于V(在V.T building和V.T 重译中使用)类似.
+V（包括 V.T 构造和 V.T 重新转置）使用相同的 cache 方案。
 
-### 第3步:处理横跨瓦片行的 XZPROT000ZZ
+### 步骤 3：处理多个 tile 行
 
-以 num tiles=2为单位,每个位置有2个瓦片行(tr=0,tr=1). 两者必须缓存:
+当 `num_tiles=2` 时，每个位置有 `tr=0` 和 `tr=1` 两个 tile 行，二者都必须缓存：
+
 ```c
 uint32_t cache_offset = pos * num_tiles * NATIVE_DIM;
-// tr=0 stored at cache_offset
-// tr=1 stored at cache_offset + NATIVE_DIM
+// tr=0 存放在 cache_offset
+// tr=1 存放在 cache_offset + NATIVE_DIM
 ```
 
-## 什么不能改变
+## 不要修改的内容
 
-- 不修改 Q 投影。 Q在注意期间按职位计算,而不是对所有职位预先计算。 Q应留在ADDSUB VRF并直接消耗.
-- 不要修改重载(M RD DRAM). 体重必须来自DRAM.
-- 不要修改模拟器。 只修改 QQZPROT000XQZ.
-- 不改变数值计算。 执行相同的W×x+b;只有输出路由改变.
+- 不要修改 Q 投影。Q 在 attention 中按位置计算，应保留在 `ADDSUB_VRF` 中并直接消费；
+- 不要修改权重加载（`M_RD_DRAM`），权重必须来自 DRAM；
+- 不要修改模拟器，只修改 `firmware/bert/bert_layer.c`；
+- 不要改变数值计算。同一个 `W×x+b` 仍然会执行，变化的只是输出路由。
 
-## 核查
+## 验证
 
-运行仪器测试以检查所有运算符产生正确的输出 :
 ```bash
 python3 -m pytest tests/integration/test_bert_e2e.py --instrument -k seq6 -s --no-header 2>&1 | grep "max_diff"
 ```
 
-所有值必须 < 0.05。 还核实DRAM的减少:
+所有值都必须小于 0.05。随后检查 DRAM 流量：
+
 ```bash
 python3 -m pytest tests/integration/test_bert_e2e.py -k seq6 -s 2>&1 | grep "DRAM"
 ```

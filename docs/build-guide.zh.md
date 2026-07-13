@@ -1,77 +1,69 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
-
 # 构建指南
 
-## 先决条件
+## 前置条件
 
-### 需要的工具
+### 必需工具
 
-|工具|选项。 版本|安装|
-|------|-------------|---------|
-|Py| ≥ 3.10 |津巴布韦|
-|计算| ≥ 3.20 |津巴布韦|
-|海湾合作委员会(本土)| ≥ 10 |——为主机编译 QZPROT0001Z|
-|RISC-V 跨海合会| ≥ 10 |XQ ZPROT000XQZ – 编译 RV64IM 光金属的固件|
-|数字| ≥ 2.0 |津巴布韦|
-|测试| ≥ 7.0 |津巴布韦|
-|长凳| ≥ 0.29 |津巴布韦|
+| 工具 | 最低版本 | 安装方式 |
+|------|----------|----------|
+| Python | ≥ 3.10 | `apt install python3 python3-pip python3-venv` |
+| CMake | ≥ 3.20 | `apt install cmake` |
+| GCC（本机） | ≥ 10 | `apt install gcc`，用于为主机构建 `libnpukernels.so` |
+| RISC-V 交叉 GCC | ≥ 10 | `apt install gcc-riscv64-unknown-elf`，用于构建 RV64IM 裸机固件 |
+| numpy | ≥ 2.0 | `pip install numpy` |
+| pytest | ≥ 7.0 | `pip install pytest` |
+| pyelftools | ≥ 0.29 | `pip install pyelftools` |
 
 ### 可选工具
 
-|工具|版本|安装|目的|
-|------|---------|---------|---------|
+| 工具 | 版本 | 安装方式 | 用途 |
+|------|------|----------|------|
+| Graphviz | — | `apt install graphviz` | 将 DAG `.dot` 文件渲染为 SVG |
+| pi | ≥ 0.79 | `npm install -g @earendil-works/pi-coding-agent` | 自动优化所用的 AI Agent |
 
-|图维兹| — |津巴布韦|Render DAG.dot 文件到 SVG|
-|毕| ≥ 0.79 |津巴布韦|自动优化的AI代理|
+### ISS
 
-### 国际空间站
-
-MiniRV64是一个纯Python RV64IM ISS,包含在XQZPROT000XQZ的回波中.
-没有外部依赖关系。
+仓库中的 `iss/mini_rv64.py` 提供纯 Python 实现的 RV64IM MiniRV64 指令集模拟器，无外部依赖。
 
 ## 构建步骤
 
-### 1. C 核心图书馆
+### 1. C kernel 库
 
 ```bash
 make kernels
 ```
 
-将 QQZPROT000XZ 编译为 ZPROT0001Z, 共享
-模拟器用于快速矩阵乘法,GELU,软max等的库.
+该命令将 `kernels/*.c` 编译为 `_build/kernels/libnpukernels.so`。这是模拟器使用的共享库，用于高效执行矩阵乘、GELU、Softmax 等计算。
 
-### 2. RISC-V 软件
+### 2. RISC-V 固件
 
 ```bash
 make firmware
 ```
 
-将QQZPROT000XQZ编译为RISC-VELF二进制. 那个
-固件是一个在MiniRV64上运行并驱动
-NPU通过MMIO写作. 产出:ZPROT000Z。
+该命令将 `firmware/bert/bert_layer.c` 编译为 RISC-V ELF 二进制文件。固件是运行在 MiniRV64 上的裸机程序，通过 MMIO 写操作驱动 NPU。输出文件为 `firmware/build/bert.elf`。
 
 ### 3. 运行测试
 
 ```bash
-# Integration test (BERT E2E)
+# 集成测试（BERT 端到端）
 python3 -m pytest tests/integration/ -v
 
-# All integration + unit tests
+# 全部集成测试和单元测试
 python3 -m pytest tests/ -v
 ```
 
-测试套件自动检测可选依赖性 :
+测试套件会自动检测可选依赖：
 
-- ** 无国际空间站** — 试验优雅地跳过解释性信息
+- **未安装 ISS**：测试会跳过相关项目，并给出说明。
 
-## 目录布局
+## 目录结构
 
-```
+```text
 _build/
-└── kernels/libnpukernels.so      ← C kernel library (compiled)
+└── kernels/libnpukernels.so      ← 已编译的 C kernel 库
 firmware/
-└── build_dim{2,4}/bert.elf       ← RISC-V firmware (compiled per config)
+└── build_dim{2,4}/bert.elf       ← 按配置编译的 RISC-V 固件
 ```
 
-使用正确的 DRAM 版式自动重建固件 ELF
-每次闭路管道探测到一个配置时,都会进行宏。
+每次闭环流程探测一种配置时，系统都会使用正确的 DRAM 布局宏自动重新构建固件 ELF。

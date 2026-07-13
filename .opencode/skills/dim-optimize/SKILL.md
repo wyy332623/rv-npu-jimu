@@ -119,19 +119,7 @@ At num_tiles=1, the layernorm operates on a single tile-row:
 
 ## Self-Verification
 
-After modifying the firmware, validate with:
-
-```bash
-# Test single-tile config (dim=4, hidden=4, num_tiles=1)
-python3 -m pytest tests/integration/test_bert_e2e.py -k "dim4-h4" -v
-
-# All 6 test cases (if multi-tile paths were preserved):
-python3 -m pytest tests/integration/test_bert_e2e.py -v
-```
-
-The test suite includes dedicated dim4-h4 test cases for single-tile validation.
-If multi-tile paths are removed, the dim2-h4 and dim4-h8 test cases will
-be automatically skipped.
+After modifying the firmware, validate with the project's testing instructions. You can use the `self-verify` skill or check your instructions for the exact verify and convergence check commands to run.
 
 ## Cost Model
 

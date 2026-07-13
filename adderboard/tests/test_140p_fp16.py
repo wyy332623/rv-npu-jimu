@@ -80,6 +80,9 @@ class NpuFP16(NpuDeviceMini):
         n = min(len(arr), len(self._vrf[MEM_DRAM]) - addr)
         self._vrf[MEM_DRAM][addr:addr + n] = arr[:n].astype(np.float32)
 
+    def get_pipeline(self):
+        return self._pipeline.copy() if self._pipeline is not None else None
+
     def send_lo(self, op, addr):
         inst = ((op & 0xFF) << 24) | (addr & 0xFFFFFF)
         self._push_instruction(inst)

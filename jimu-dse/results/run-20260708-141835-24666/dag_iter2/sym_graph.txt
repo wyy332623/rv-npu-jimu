@@ -1,0 +1,17 @@
+  # Name                         Loops      Prod           Cons           InstrExpr
+-------------------------------------------------------------------------------------
+  0  MVM_SCRATCH_FOR_pos          pos        SCRATCH        SCRATCH,UNIT_VEC 1 * seq_len
+    <- [2 LN1] via SCRATCH
+  1  RESIDUAL_ADD_FOR_pos         pos        RES            -              1 * seq_len
+  2  LN1                          -          SCRATCH        RES,SCRATCH    57
+    <- [0 MVM_SCRATCH_FOR_pos] via SCRATCH
+    <- [1 RESIDUAL_ADD_FOR_pos] via RES
+  3  SAVE_OUT                     -          OUT            -              1
+  4  OP_4                         -          -              -              1
+  5  MVM_OUT_FOR_pos              pos        OUT            -              1 * seq_len + -1
+  6  LN2_FOR_pos                  pos        SCRATCH        RES,SCRATCH    1 * seq_len + -1
+    <- [0 MVM_SCRATCH_FOR_pos] via SCRATCH
+    <- [1 RESIDUAL_ADD_FOR_pos] via RES
+  7  OP_8_FOR_pos                 pos        -              -              1 * seq_len + -1
+
+Total: 8 symbolic ops, 5 edges

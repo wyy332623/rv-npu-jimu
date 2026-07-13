@@ -249,11 +249,9 @@ class EventTracer:
             self._raw_inst = inst
             self._original_push(inst)
 
-        # Patch _execute to record events.
-        # New signature accepts pipeline/vpipe_a kwargs for chain threading.
+        # Patch _execute to record events
         def patched_execute(opcode: int, opd0: int, opd1: int,
-                            full_operand: int = 0,
-                            pipeline=None, vpipe_a=None):
+                            full_operand: int = 0):
             # Record event BEFORE execution so we capture the
             # instruction dispatch, not the side-effects
             op_name = _opcode_name(opcode, opd0)
@@ -269,10 +267,8 @@ class EventTracer:
             self.events.append(event)
             self._event_idx += 1
 
-            # Delegate to original with pipeline/vpipe_a
-            return self._original_execute(
-                opcode, opd0, opd1, full_operand,
-                pipeline=pipeline, vpipe_a=vpipe_a)
+            # Delegate to original
+            self._original_execute(opcode, opd0, opd1, full_operand)
 
         inner_device._push_instruction = patched_push
         inner_device._execute = patched_execute

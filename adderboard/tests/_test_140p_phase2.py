@@ -94,8 +94,99 @@ FW_LAST_H = 0x4000
 
 def make_npu(dram_arr):
     npu = NpuDeviceMini(native_dim=4)
-    npu._round_fp16 = lambda arr: arr if arr is not None else None
-    npu._store_to_ivrf = lambda p: None
+    npu._pipeline_round_fp16 = lambda: None
+    npu._store_to_ivrf = lambda: None
+
+    def _v_rd_dram(self, opcode, opd0, opd1, full_operand=0):
+        addr = full_operand
+        dl = self._vrf.get(MEM_DRAM)
+        if dl is not None:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
+            n = min(self.native_dim, len(dl) - addr) if addr < len(dl) else 0
+            self._pipeline = np.zeros(self.native_dim, dtype=np.float32)
+            if n > 0:
+                self._pipeline[:n] = dl[addr:addr + n]
+    npu._v_rd_dram = lambda *a, **kw: _v_rd_dram(npu, *a, **kw)
+
+    def _v_wr_dram(self, opcode, opd0, opd1, full_operand=0):
+        addr = full_operand
+        dl = self._vrf.get(MEM_DRAM)
+        if dl is not None and self._pipeline is not None:
+            n = min(self.native_dim, len(self._pipeline),
+                    len(dl) - addr) if addr < len(dl) else 0
+            if n > 0:
+                dl[addr:addr + n] = self._pipeline[:n]
+    npu._v_wr_dram = lambda *a, **kw: _v_wr_dram(npu, *a, **kw)
+
+    orig_m_rd = npu._m_rd
+
+    def _m_rd(self, opcode, opd0, opd1, full_operand=0):
+        if opd0 == MEM_VEC_TO_MAT_ROW:
+            return orig_m_rd(opcode, opd0, opd1, full_operand)
+        addr = full_operand
+        dl = self._vrf.get(MEM_DRAM)
+        if dl is not None and addr < len(dl):
+            n = self._regs.get(1, 1) * self.native_dim
+            mrf_size = n * n
+            if addr + mrf_size <= len(dl):
+                mat = dl[addr:addr + mrf_size].reshape(n, n).copy()
+                self._mrf[MEM_MATRIX_RF] = mat
+    npu._m_rd = lambda *a, **kw: _m_rd(npu, *a, **kw)
+
+    def _v_rd(self, opcode, opd0, opd1):
+        mt, ad = opd0, opd1
+        if mt == MEM_FILL:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
+            val = np.frombuffer(np.uint16([ad]).tobytes(),
+                                dtype=np.float16)[0]
+            self._pipeline = np.full(self.native_dim, float(val),
+                                      dtype=np.float32)
+            return
+        if mt == MEM_SPU_BROADCAST:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
+            val = self._spu_srf[ad] if ad < len(self._spu_srf) else 0.0
+            self._pipeline = np.full(self.native_dim, val, dtype=np.float32)
+            return
+        vrf = self._vrf.get(mt)
+        if vrf is not None:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
+            n = min(self.native_dim, max(0, len(vrf) - ad))
+            self._pipeline = np.zeros(self.native_dim, dtype=np.float32)
+            if n > 0:
+                self._pipeline[:n] = vrf[ad:ad + n]
+    npu._v_rd = lambda *a, **kw: _v_rd(npu, *a, **kw)
+
+    def _v_wr(self, opcode, opd0, opd1):
+        mt, ad = opd0, opd1
+        if self._pipeline is None:
+            return
+        if mt == MEM_VEC_TO_MAT_ROW:
+            key = 0
+            if key not in self._row_buffer:
+                self._row_buffer[key] = []
+            self._row_buffer[key].append(self._pipeline.copy())
+            return
+        if mt == MEM_SPU_ADD_REDUCE:
+            if ad < len(self._spu_srf):
+                self._spu_srf[ad] = (float(np.sum(self._pipeline))
+                                      + self._spu_srf[ad])
+            return
+        if mt == MEM_SPU_MAX_REDUCE:
+            if ad < len(self._spu_srf):
+                self._spu_srf[ad] = max(float(np.max(self._pipeline)),
+                                         self._spu_srf[ad])
+            return
+        vrf = self._vrf.setdefault(
+            mt, np.zeros(self.native_dim * 8, dtype=np.float32))
+        n = min(self.native_dim, max(0, len(vrf) - ad))
+        if n > 0:
+            vrf[ad:ad + n] = self._pipeline[:n]
+    npu._v_wr = lambda *a, **kw: _v_wr(npu, *a, **kw)
+
     npu._vrf[MEM_DRAM][:len(dram_arr)] = dram_arr.copy()
     return npu
 

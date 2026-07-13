@@ -106,6 +106,7 @@ def test_first_step(model):
     assert np.argmax(gl) == np.argmax(iss_logits), \
         f"ISS argmax mismatch: golden={np.argmax(gl)} iss={np.argmax(iss_logits)}"
     max_diff = float(np.max(np.abs(gl - iss_logits)))
+    print(f"  [adder] logits: max_diff={max_diff:.6f}")
     assert max_diff < 0.01, f"ISS max diff {max_diff:.6f} >= 0.01"
 
 

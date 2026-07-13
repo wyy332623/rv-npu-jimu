@@ -5,8 +5,6 @@
 #include <stdint.h>
 
 void npu_send_inst(uint32_t inst);
-void npu_issue_chain(void);
-void npu_wait_chain(void);
 uint32_t npu_read_reg(uint32_t offset);
 void npu_write_reg(uint32_t offset, uint32_t val);
 void npu_wait_done(void);

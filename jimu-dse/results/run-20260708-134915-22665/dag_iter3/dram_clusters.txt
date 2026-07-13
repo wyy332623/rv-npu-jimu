@@ -1,0 +1,26 @@
+  # Label                                       Members  LoadB  StoreB  FLOPs     AI
+------------------------------------------------------------------------------------------
+  0 FFN Out+Res Add2 t1 p0                        0-123    156       8    204    1.2
+     reads: SCRATCH, UNIT_VEC, WEIGHT, X
+     writes: SCRATCH[0]
+  1 Save X→RES p0                               124-172     60       8     72    1.1
+     reads: SCRATCH, UNIT_VEC, WEIGHT, X
+     writes: RES[0]
+  2 LN scratch p0                               173-175      0       4      8    2.0
+     writes: SCRATCH[0]
+  3 Residual Add1 t1 p0                         176-180     12       4      8    0.5
+     reads: SCRATCH, X
+     writes: SCRATCH[1]
+  4 Residual Add2 p0                            181-247    104       8    116    1.0
+     reads: RES, SCRATCH, WEIGHT, X
+     writes: SCRATCH[0]
+  5 Residual Add1 t1 p0                         248-252     12       4      8    0.5
+     reads: SCRATCH, X
+     writes: SCRATCH[1]
+  6 LN scratch p0                                   253      0       4      0    0.0
+     writes: SCRATCH[0]
+  7 LayerNorm 2 → Out p0                        254-260     16       8      8    0.3
+     reads: SCRATCH, X
+     writes: OUT[0]
+
+Total: 8 clusters

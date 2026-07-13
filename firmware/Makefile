@@ -27,7 +27,7 @@ CFLAGS = -Os -DNATIVE_DIM=$(NATIVE_DIM) \
          -D_LN2_GAMMA=$(_LN2_GAMMA) -D_LN2_BETA=$(_LN2_BETA) \
          -D_SCRATCH=$(_SCRATCH) -DNUM_HEAD=$(NUM_HEAD) \
          -ffreestanding -nostdlib -nostartfiles -mno-relax \
-         -march=rv64im -mabi=lp64 \
+         -march=rv64im_zicsr -mabi=lp64 \
          -I. -Ilib
 LDFLAGS = -T firmware.ld -nostartfiles -nostdlib -Wl,-e,_start -Wl,--no-dynamic-linker
 

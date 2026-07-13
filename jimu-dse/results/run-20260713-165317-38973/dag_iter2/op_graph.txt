@@ -1,0 +1,9 @@
+  # Name                 Prod             Cons             Instr       Ids
+---------------------------------------------------------------------------
+  0 MVM_RES              RES              UNIT_VEC           195     0-194
+  1 LN1                  SCRATCH          RES,SCRATCH         61   195-255
+    <- [0 MVM_RES] via RES
+  2 SAVE_OUT             OUT              -                    1   256-256
+  3 OP_3                 -                -                    1   257-257
+
+Total: 4 operators, 1 edges

@@ -38,6 +38,7 @@ while [[ $# -gt 0 ]]; do
             fi
             shift 2 ;;
         --model) OPENCODE_MODEL="$2"; shift 2 ;;
+        --workload) WORKLOAD="$2"; shift 2 ;;
         --goal)
             GOAL="$2"
             GOAL_DIR="${REPO_ROOT}/jimu-dse/goals/${GOAL}"
@@ -62,8 +63,21 @@ die() { log "[FATAL] $*"; exit 1; }
 cd "${REPO_ROOT}"
 
 # ── Load goal configuration ──────────────────────────────────────────
+WORKLOAD="${WORKLOAD:-bert}"
 GOAL_DIR="${REPO_ROOT}/jimu-dse/goals/${GOAL}"
 source "${GOAL_DIR}/goal.sh"
+
+WORKLOAD_MANIFEST="${REPO_ROOT}/jimu-dse/workloads/${WORKLOAD}.sh"
+if [[ -f "${WORKLOAD_MANIFEST}" ]]; then
+    source "${WORKLOAD_MANIFEST}"
+else
+    # Fallback to bert if manifest not found
+    WORKLOAD_NAME="bert"
+    MAKE_TARGET="bert"
+    TARGET_FILE="firmware/bert/bert_layer.c"
+    TEST_VERIFY_CMD='python3 -m pytest tests/integration/test_bert_e2e.py -k "dim${DIM} and h${HIDDEN}" -s --no-header 2>&1 | grep max_diff'
+    TEST_CONVERGE_CMD='python3 -m pytest tests/integration/test_bert_e2e.py -k "dim${DIM} and h${HIDDEN}" --no-header -q 2>&1 | tail -3'
+fi
 
 # DIM, HIDDEN, NUM_HEAD, SEQ_LENS, BASELINE_FILE, SKILLS, PRIMARY_METRIC
 # are now set from the goal config.
@@ -71,7 +85,6 @@ read -ra SEQ_ARRAY <<< "${SEQ_LENS}"
 SL2="${SEQ_ARRAY[0]}"
 SL6="${SEQ_ARRAY[1]}"
 
-TARGET_FILE="firmware/bert/bert_layer.c"
 RESULTS="${REPO_ROOT}/jimu-dse/results/${RUN_TAG}"
 mkdir -p "${RESULTS}"
 
@@ -118,6 +131,11 @@ log "[INIT] Kernels ready"
 
 build_firmware() {
     local SL=$1
+    if type build_firmware_workload &>/dev/null; then
+        build_firmware_workload "$SL"
+        return $?
+    fi
+    # Fallback to bert build
     local dim=${DIM} hidden=${HIDDEN} num_head=${NUM_HEAD}
     local proj_base=$((hidden * SL + 4))
     local mat_size=$((hidden * hidden))
@@ -133,8 +151,8 @@ build_firmware() {
     _LN1_GAMMA=${ln_base} _LN1_BETA=$((ln_base + ln_size)) \
     _LN2_GAMMA=$((ln_base + 2*ln_size)) _LN2_BETA=$((ln_base + 3*ln_size)) \
     _SCRATCH=1280 NUM_HEAD=${num_head} \
-    make -C firmware BUILD_DIR=build_dim${dim} clean all > /dev/null 2>&1
-    if [[ ! -f "firmware/build_dim${dim}/bert.elf" ]]; then
+    make -C firmware BUILD_DIR=build_dim${dim} TARGET=${MAKE_TARGET:-bert} clean all > /dev/null 2>&1
+    if [[ ! -f "firmware/build_dim${dim}/${MAKE_TARGET:-bert}.elf" ]]; then
         log "[BUILD] FAILED for seq=${SL}"
         return 1
     fi
@@ -158,7 +176,7 @@ probe() {
     local dim=${DIM} hidden=${HIDDEN} nh=${NUM_HEAD}
     build_firmware ${SL} || return 1
 
-    local elf_path="firmware/build_dim${dim}/bert.elf"
+    local elf_path="firmware/build_dim${dim}/${MAKE_TARGET:-bert}.elf"
 
     # Generate DAG + cluster graphs (seq=1 for visual clarity)
     if [[ "${SL}" == "${SL6}" ]]; then
@@ -303,7 +321,7 @@ for l in d.get('clusters', []):
 
     FW_HEADER=$(read_fw_header "${TARGET_FILE}")
     {
-        echo "You are optimizing NPU firmware at firmware/bert/bert_layer.c."
+        echo "You are optimizing NPU firmware at ${TARGET_FILE}."
         echo ""
         echo "Goal: ${GOAL} (dim=${DIM}, hidden=${HIDDEN}, num_head=${NUM_HEAD})"
         echo "Current header: ${FW_HEADER}"
@@ -347,16 +365,18 @@ print(f'6 projections = {ts.get(\"total_projection_mv_mul\",0)} MV_MUL total')
             echo "=== Structural Statistics ==="
             echo "MV_MUL count: currently optimal (num_tiles=1 at runtime)."
             echo "The goal is CODE CORRECTNESS: remove tile loop overhead and fix masking."
+        elif [[ "${SKILLS}" == *"vrf-cache"* ]]; then
+            echo "- Keep all existing functions intact — apply VRF cache transformations as instructed."
         else
-            echo "- Keep all existing functions (mvm_tiled_q, etc.) intact — only add VRF cache"
+            echo "- Follow the skill instructions exactly as provided."
         fi
         echo "=== Constraints ==="
-        echo "- Only modify firmware/bert/bert_layer.c"
+        echo "- Only modify ${TARGET_FILE}"
         echo "- Do NOT modify the emulator or any other file"
         echo "- File must compile: gcc for RISC-V (NATIVE_DIM=${DIM})"
         echo ""
         echo "=== Self-Verify ==="
-        echo "python3 -m pytest tests/integration/test_bert_e2e.py -k \"dim${DIM} and h${HIDDEN}\" -s --no-header 2>&1 | grep max_diff"
+        echo "${TEST_VERIFY_CMD}"
     } > "${PROMPT}"
 
     log "[AGENT] Prompt: $(wc -c < ${PROMPT}) bytes"
@@ -371,18 +391,20 @@ print(f'6 projections = {ts.get(\"total_projection_mv_mul\",0)} MV_MUL total')
                 -f "${TARGET_FILE}" \
                 --dangerously-skip-permissions \
                 "$(cat ${PROMPT})" 2>&1 | tee -a "${RESULTS}/opencode_output.log" | tail -20 || true
-            [[ -f "${REPO_ROOT}/firmware/bert/bert_layer.c" ]] && \
-                cp "${REPO_ROOT}/firmware/bert/bert_layer.c" "${CANDIDATE}"
+            [[ -f "${REPO_ROOT}/${TARGET_FILE}" ]] && \
+                cp "${REPO_ROOT}/${TARGET_FILE}" "${CANDIDATE}"
         else
             log "[AGENT] opencode not available — using unmodified firmware"
             cp "${TARGET_FILE}" "${CANDIDATE}"
         fi
     elif command -v pi &>/dev/null; then
         log "[AGENT] Invoking pi (timeout: ${JIMU_AGENT_TIMEOUT}s)..."
-        pi --skill "${REPO_ROOT}/jimu-dse/docs/skills/isa/vrf-cache.md" \
+        # Pi only supports one skill via --skill right now, pass the first one
+        FIRST_SKILL=$(echo ${SKILLS} | awk '{print $1}')
+        pi --skill "${REPO_ROOT}/jimu-dse/docs/skills/isa/${FIRST_SKILL}.md" \
            -p "$(cat ${PROMPT})" 2>/dev/null || true
-        [[ -f "${REPO_ROOT}/firmware/bert/bert_layer.c" ]] && \
-            cp "${REPO_ROOT}/firmware/bert/bert_layer.c" "${CANDIDATE}"
+        [[ -f "${REPO_ROOT}/${TARGET_FILE}" ]] && \
+            cp "${REPO_ROOT}/${TARGET_FILE}" "${CANDIDATE}"
         [[ ! -s "${CANDIDATE}" ]] && pi -p "$(cat ${PROMPT})" 2>/dev/null | \
             sed -n '/^```/,/^```/{/^```/d;p}' > "${CANDIDATE}"
         [[ ! -s "${CANDIDATE}" ]] && cp "${TARGET_FILE}" "${CANDIDATE}"
@@ -420,7 +442,7 @@ npu._vrf[MEM_DRAM][0:h] = np.zeros(h, dtype=np.float32)
 rec = TraceRecorder(npu)
 cpu = MiniRV64()
 cpu.set_mmio_device(rec)
-cpu.load_elf('firmware/build_dim${DIM}/bert.elf')
+cpu.load_elf('firmware/build_dim${DIM}/${MAKE_TARGET:-bert}.elf')
 cpu.run(cycles=300000)
 ds = npu.get_dram_stats()
 t_el = ds.get('vec_rd_elements',0)+ds.get('vec_wr_elements',0)+ds.get('mat_rd_elements',0)+ds.get('mat_wr_elements',0)
@@ -430,8 +452,8 @@ print(json.dumps({'total_bytes': t_b, 'dram_stats': dict(ds), 'instr_count': len
 
     if [[ -s "${RESULTS}/val_${iter}.json" ]]; then
         B6_NEW=$(python3 -c "import json; print(json.load(open('${RESULTS}/val_${iter}.json')).get('total_bytes',0))" 2>/dev/null || echo 0)
-        SAVED=$((BASELINE_VALUE - B6_NEW))
-        log "[VALIDATE] DRAM: ${B6_NEW}B (saved ${SAVED}B vs run-start ${BASELINE_VALUE}B)"
+        SAVED=$((${BASELINE_VALUE:-0} - B6_NEW))
+        log "[VALIDATE] DRAM: ${B6_NEW}B (saved ${SAVED}B vs run-start ${BASELINE_VALUE:-0}B)"
     else
         B6_NEW=0; SAVED=0
         log "[VALIDATE] Could not validate"
@@ -456,7 +478,7 @@ print(json.dumps({'total_bytes': t_b, 'dram_stats': dict(ds), 'instr_count': len
     # ---- PHASE 7: CONVERGENCE (after AGENT) ------------------------------
     if [[ "${PRIMARY_METRIC}" == "test_pass" ]]; then
         log "[CONVERGE] Running dim${DIM}-h${HIDDEN} tests..."
-        TEST_OUT=$(python3 -m pytest tests/integration/test_bert_e2e.py -k "dim${DIM} and h${HIDDEN}" --no-header -q 2>&1 | tail -3)
+        TEST_OUT=$(eval "${TEST_CONVERGE_CMD}")
         TEST_OK="$?"
         echo "${TEST_OUT}"
         if [[ "${TEST_OK}" == "0" ]]; then
@@ -467,12 +489,12 @@ print(json.dumps({'total_bytes': t_b, 'dram_stats': dict(ds), 'instr_count': len
         else
             log "[CONVERGE] dim${DIM}-h${HIDDEN} tests FAIL (${PROBE_DATA})"
         fi
-    elif [[ ${SAVED} -gt 0 ]]; then
+    elif [[ ${SAVED} -gt 0 || ${BASELINE_VALUE:-0} -eq 0 ]]; then
         # Standard DRAM-based convergence
-        IMPROV=$(python3 -c "p=((${BASELINE_VALUE}-${B6})*100.0/${BASELINE_VALUE}); print(f'{p:.1f}')" 2>/dev/null || echo "0")
-        log "[CONVERGE] ${B6}B vs run-start ${BASELINE_VALUE}B = ${IMPROV}% (${PROBE_DATA})"
+        IMPROV=$(python3 -c "p=((${BASELINE_VALUE:-1}-${B6})*100.0/max(${BASELINE_VALUE:-1},1)); print(f'{p:.1f}')" 2>/dev/null || echo "0")
+        log "[CONVERGE] ${B6}B vs run-start ${BASELINE_VALUE:-0}B = ${IMPROV}% (${PROBE_DATA})"
         if [[ ${iter} -gt 1 ]]; then
-            CONVERGED=$(python3 -c "p=((${BASELINE_VALUE}-${B6})*100.0/${BASELINE_VALUE}); print('1' if p < ${JIMU_THRESHOLD} else '0')" 2>/dev/null || echo "0")
+            CONVERGED=$(python3 -c "p=((${BASELINE_VALUE:-1}-${B6})*100.0/max(${BASELINE_VALUE:-1},1)); print('1' if p < ${JIMU_THRESHOLD} else '0')" 2>/dev/null || echo "0")
             if [[ "${CONVERGED}" == "1" ]]; then
                 log "Converged (${IMPROV}% < ${JIMU_THRESHOLD}%)"
                 break
@@ -500,8 +522,8 @@ log "Results:    ${RESULTS}"
 if [[ "${PRIMARY_METRIC}" == "test_pass" ]]; then
     TEST_RESULT="FAIL"
     [[ "${BEST_VALUE}" == "1" ]] && TEST_RESULT="PASS"
-    log "Baseline:   dim2-h4 firmware (multi-tile)"
-    log "Target:     dim4-h4 tests pass"
+    log "Baseline:   ${BASELINE_FILE}"
+    log "Target:     dim${DIM}-h${HIDDEN} tests pass"
     log "Result:     ${TEST_RESULT}"
 else
     log "Baseline:   ${BASELINE_VALUE}B"

@@ -103,48 +103,54 @@ ls jimu-dse/results/run-*/dag_iter1/
 cat jimu-dse/results/run-*/diff_1.patch
 ```
 
-### 5. Run with a Different Goal
+### 5. Run with Different Goals and Workloads
+
+The pipeline applies optimizations independent of the workload. You can target either the default BERT model or the Adderboard by passing `--workload adder`.
 
 ```bash
-# G1: DRAM optimization at dim=2 (VRF cache)
+# G1: DRAM optimization at dim=2 (VRF cache) on default BERT workload
 bash jimu-dse/scripts/npu_closed_loop.sh --goal dram-optimization
 
-# G2: Compute efficiency at dim=4 (single-tile projections)
+# G2: Compute efficiency at dim=4 (single-tile projections) on BERT
 bash jimu-dse/scripts/npu_closed_loop.sh --goal compute-optimization --agent opencode
 
-# G3: Combined (dim=4 + VRF cache)
+# G3: Combined (dim=4 + VRF cache) on BERT
 bash jimu-dse/scripts/npu_closed_loop.sh --goal combined --agent opencode
+
+# M0/G1: Run G1 VRF cache optimization on Adderboard
+bash jimu-dse/scripts/npu_closed_loop.sh --goal dram-optimization --workload adder --agent opencode
 ```
 
 ---
 
 ## Optimization Goals
 
-The pipeline supports three optimization goals, each defined in `jimu-dse/goals/<name>/goal.sh`:
+The pipeline supports three standard optimization goals, each defined in `jimu-dse/goals/<name>/goal.sh`. These goals can be applied to different workloads by passing the `--workload` flag.
 
-| Goal | Name | Dim | Hidden | Skill | Primary Metric |
-|------|------|-----|--------|-------|----------------|
+| Goal | Name | Dim (BERT) | Dim (Adder) | Skill | Primary Metric |
+|------|------|------------|-------------|-------|----------------|
 | **G1** | `dram-optimization` | 2 | 4 | `vrf-cache` | `total_bytes` (DRAM) |
-| **G2** | `compute-optimization` | 4 | 4 | `dim-optimize` | `mv_mul_count` |
-| **G3** | `combined` | 4 | 4 | `dim-optimize` + `vrf-cache` | `mv_mul_count` |
+| **G2** | `compute-optimization` | 4 | 4 | `dim-optimize` | `test_pass` |
+| **G3** | `combined` | 4 | 4 | `dim-optimize` + `vrf-cache` | `test_pass` |
 
 ### G1: DRAM Optimization
 
-Reduces DRAM bytes at fixed dim=2 by applying VRF cache to eliminate
-save-load roundtrips for K, V, Q, Z, SO, LN, GELU intermediates.
+Reduces DRAM bytes at a fixed dimension by applying VRF cache to eliminate
+save-load roundtrips. For BERT, this eliminates roundtrips for K, V, Q, Z, SO, LN, GELU intermediates. For Adder, it focuses on context and score caches.
 
 ### G2: Compute Efficiency
 
 Restructures firmware from multi-tile to single-tile projections by
-increasing NATIVE_DIM to match hidden_size. Reduces MV_MUL operations
+increasing NATIVE_DIM to match hidden_size (BERT specifically). Reduces MV_MUL operations
 per projection from 4 to 1, and weight tile loads (M_RD_DRAM) from
 144 to 36 ops at seq=6.
 
 ### G3: Combined
 
-Applies both transformations at dim=4. The `dim-optimize` skill is
+Applies both transformations. The `dim-optimize` skill is
 applied first (restructure for single-tile), then `vrf-cache`
 eliminates remaining DRAM save-load roundtrips.
+
 
 ---
 
@@ -370,13 +376,13 @@ After VRF cache optimization, typical results:
 
 ## Baseline File
 
-The unoptimized reference firmware is at `jimu-dse/baseline/bert_layer.c`.
-This is a committed copy of the original firmware before any VRF cache
-optimizations. To update the baseline:
+The unoptimized reference firmware files are stored in `jimu-dse/baseline/`.
+For example, `jimu-dse/baseline/bert_layer.c` and `jimu-dse/baseline/adder_140p.c`.
+These are committed copies of the original firmware before any optimizations. To update the baseline:
 
 ```bash
 # After a successful optimization, promote the best candidate:
-cp jimu-dse/results/run-<timestamp>/candidate_best.c jimu-dse/baseline/bert_layer.c
+cp jimu-dse/results/run-<timestamp>/candidate_best.c jimu-dse/baseline/<target_file>.c
 ```
 
 ---
@@ -416,13 +422,15 @@ Output in `_out/graphs/<config-name>/`.
 
 ```
 .
-├── firmware/bert/bert_layer.c    ← Target firmware (only file the agent modifies)
+├── firmware/bert/bert_layer.c    ← Target firmware (modified by agent depending on workload)
+├── adderboard/firmware/          ← Adder target firmware
 ├── jimu-dse/
-│   ├── baseline/bert_layer.c     ← Unoptimized reference (committed, no git needed)
+│   ├── baseline/                 ← Unoptimized reference (committed, no git needed)
+│   ├── workloads/                ← Workload manifests (e.g. bert.sh, adder.sh)
 │   ├── goals/                    ← Optimization goal configurations
-│   │   ├── dram-optimization/    ← G1: VRF cache at dim=2
-│   │   ├── compute-optimization/ ← G2: Single-tile at dim=4
-│   │   └── combined/             ← G3: Both G1 + G2 at dim=4
+│   │   ├── dram-optimization/    ← G1: VRF cache
+│   │   ├── compute-optimization/ ← G2: Single-tile projection
+│   │   └── combined/             ← G3: Both G1 + G2
 │   ├── scripts/
 │   │   ├── npu_closed_loop.sh    ← Main pipeline driver
 │   │   └── visualize_graph.py    ← DAG graph generator

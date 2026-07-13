@@ -78,14 +78,16 @@ def build_firmware(dim, hidden_size, seq_len, num_head) -> str:
     }
     full_env = {**os.environ, **env}
     fw_root = str(REPO_ROOT / "firmware")
+    make_target = os.environ.get("MAKE_TARGET", "bert")
     r = subprocess.run(
-        ['make', '-C', fw_root, f'BUILD_DIR={build_dir}', 'clean', 'all'],
+        ['make', '-C', str(REPO_ROOT / 'firmware'), f'BUILD_DIR={build_dir}', f'TARGET={make_target}', 'clean', 'all'],
         capture_output=True, text=True, env=full_env)
     if r.returncode != 0:
         print(f"  ✗  Firmware build failed (RC={r.returncode})")
         print(r.stderr[-300:] if r.stderr else r.stdout[-300:])
         sys.exit(1)
-    elf = str(REPO_ROOT / "firmware" / build_dir / "bert.elf")
+    # the target name might be adder_140p, but the elf could be adder_140p.elf
+    elf = str(REPO_ROOT / "firmware" / build_dir / f"{make_target}.elf")
     print(f"  ✓  Firmware built: {elf}")
     return elf
 
@@ -174,7 +176,8 @@ def run_emulator(dim, hidden_size, seq_len, num_head, params, elf_path=None):
     cpu = MiniRV64()
     cpu.set_mmio_device(rec)
     if elf_path is None:
-        elf_path = str((REPO_ROOT / f"firmware/build_dim{dim}/bert.elf").resolve())
+        make_target = os.environ.get("MAKE_TARGET", "bert")
+        elf_path = str((REPO_ROOT / f"firmware/build_dim{dim}/{make_target}.elf").resolve())
     cpu.load_elf(elf_path)
     cpu.run(cycles=300_000)
 

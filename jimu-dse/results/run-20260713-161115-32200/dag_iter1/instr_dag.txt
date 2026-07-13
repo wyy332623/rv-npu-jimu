@@ -1,0 +1,447 @@
+  0 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+  1 V_WR                 defs=[('VRF', 13, 0)] uses=[('pipe',)]
+    <- [0 V_RD] via pipe
+  2 S_WR                 defs=[('REG', 20)] uses=[]
+  3 S_WR                 defs=[('REG', 1)] uses=[]
+  4 S_WR                 defs=[('REG', 2)] uses=[]
+  5 S_WR                 defs=[('REG', 3)] uses=[]
+  6 S_WR                 defs=[('REG', 17)] uses=[]
+  7 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+  8 V_WR                 defs=[('VRF', 13, 0)] uses=[('pipe',)]
+    <- [7 V_RD] via pipe
+  9 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [7 V_RD] via pipe
+ 10 S_WR                 defs=[('REG', 1)] uses=[]
+ 11 S_WR                 defs=[('REG', 2)] uses=[]
+ 12 S_WR                 defs=[('REG', 3)] uses=[]
+ 13 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 14 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [13 V_RD] via pipe
+ 15 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 0)]
+ 16 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [15 V_RD_DRAM] via pipe
+ 17 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [16 V_WR] via VRF[5][0]
+ 18 M_RD_DRAM            defs=[('MRF',)] uses=[('DRAM', 28)]
+ 19 M_WR                 defs=[] uses=[('MRF',)]
+    <- [18 M_RD_DRAM] via MRF
+ 20 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [17 V_RD] via pipe
+    <- [18 M_RD_DRAM] via MRF
+ 21 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [20 MV_MUL] via pipe
+ 22 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [21 V_WR] via VRF[7][0]
+ 23 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 44)]
+ 24 VV_ADD               defs=[('pipe',)] uses=[('pipe',), ('vpipe_a',)]
+    <- [23 V_RD_DRAM] via pipe
+    <- [23 V_RD_DRAM] via vpipe_a
+ 25 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [24 VV_ADD] via pipe
+ 26 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [25 V_WR] via VRF[7][0]
+ 27 V_WR                 defs=[('VRF', 6, 0)] uses=[('pipe',)]
+    <- [26 V_RD] via pipe
+ 28 S_WR                 defs=[('REG', 1)] uses=[]
+ 29 S_WR                 defs=[('REG', 2)] uses=[]
+ 30 S_WR                 defs=[('REG', 3)] uses=[]
+ 31 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 32 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [31 V_RD] via pipe
+ 33 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 0)]
+ 34 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [33 V_RD_DRAM] via pipe
+ 35 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [34 V_WR] via VRF[5][0]
+ 36 M_RD_DRAM            defs=[('MRF',)] uses=[('DRAM', 48)]
+ 37 M_WR                 defs=[] uses=[('MRF',)]
+    <- [36 M_RD_DRAM] via MRF
+ 38 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [35 V_RD] via pipe
+    <- [36 M_RD_DRAM] via MRF
+ 39 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [38 MV_MUL] via pipe
+ 40 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [39 V_WR] via VRF[7][0]
+ 41 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 64)]
+ 42 VV_ADD               defs=[('pipe',)] uses=[('pipe',), ('vpipe_a',)]
+    <- [41 V_RD_DRAM] via pipe
+    <- [41 V_RD_DRAM] via vpipe_a
+ 43 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [42 VV_ADD] via pipe
+ 44 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [43 V_WR] via VRF[7][0]
+ 45 V_WR                 defs=[('VRF', 6, 4)] uses=[('pipe',)]
+    <- [44 V_RD] via pipe
+ 46 S_WR                 defs=[('REG', 1)] uses=[]
+ 47 S_WR                 defs=[('REG', 2)] uses=[]
+ 48 S_WR                 defs=[('REG', 3)] uses=[]
+ 49 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 50 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [49 V_RD] via pipe
+ 51 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 0)]
+ 52 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [51 V_RD_DRAM] via pipe
+ 53 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [52 V_WR] via VRF[5][0]
+ 54 M_RD_DRAM            defs=[('MRF',)] uses=[('DRAM', 8)]
+ 55 M_WR                 defs=[] uses=[('MRF',)]
+    <- [54 M_RD_DRAM] via MRF
+ 56 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [53 V_RD] via pipe
+    <- [54 M_RD_DRAM] via MRF
+ 57 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [56 MV_MUL] via pipe
+ 58 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [57 V_WR] via VRF[7][0]
+ 59 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 24)]
+ 60 VV_ADD               defs=[('pipe',)] uses=[('pipe',), ('vpipe_a',)]
+    <- [59 V_RD_DRAM] via pipe
+    <- [59 V_RD_DRAM] via vpipe_a
+ 61 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [60 VV_ADD] via pipe
+ 62 S_WR                 defs=[('REG', 15)] uses=[]
+ 63 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 6, 0)]
+    <- [27 V_WR] via VRF[6][0]
+ 64 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [63 V_RD] via pipe
+ 65 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 66 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [65 V_RD] via pipe
+ 67 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 68 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [67 V_RD] via pipe
+ 69 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 70 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [69 V_RD] via pipe
+ 71 M_RD                 defs=[('MRF',)] uses=[]
+ 72 S_WR                 defs=[('REG', 15)] uses=[]
+ 73 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [61 V_WR] via VRF[7][0]
+ 74 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [73 V_RD] via pipe
+ 75 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [74 V_WR] via VRF[5][0]
+ 76 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [71 M_RD] via MRF
+    <- [75 V_RD] via pipe
+ 77 S_WR                 defs=[('REG', 15)] uses=[]
+ 78 V_FUNC/SOFTMAX       defs=[('pipe',)] uses=[('pipe',)]
+    <- [76 MV_MUL] via pipe
+ 79 V_WR                 defs=[('VRF', 9, 0)] uses=[('pipe',)]
+    <- [78 V_FUNC/SOFTMAX] via pipe
+ 80 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 81 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [80 V_RD] via pipe
+ 82 S_WR                 defs=[('REG', 15)] uses=[]
+ 83 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 6, 4)]
+    <- [45 V_WR] via VRF[6][4]
+ 84 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [83 V_RD] via pipe
+ 85 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 86 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [85 V_RD] via pipe
+ 87 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 88 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [87 V_RD] via pipe
+ 89 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+ 90 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [89 V_RD] via pipe
+ 91 S_WR                 defs=[('REG', 15)] uses=[]
+ 92 M_RD                 defs=[('MRF',)] uses=[]
+ 93 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 2304)]
+ 94 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [93 V_RD_DRAM] via pipe
+ 95 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [94 V_WR] via VRF[5][0]
+ 96 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [92 M_RD] via MRF
+    <- [95 V_RD] via pipe
+ 97 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [96 MV_MUL] via pipe
+ 98 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 2308)]
+ 99 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [98 V_RD_DRAM] via pipe
+100 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [99 V_WR] via VRF[5][0]
+101 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [92 M_RD] via MRF
+    <- [100 V_RD] via pipe
+102 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [101 MV_MUL] via pipe
+103 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+104 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [103 V_RD] via pipe
+105 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+106 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [105 V_RD] via pipe
+107 M_RD                 defs=[('MRF',)] uses=[]
+108 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 9, 0)]
+    <- [79 V_WR] via VRF[9][0]
+109 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [108 V_RD] via pipe
+110 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [109 V_WR] via VRF[5][0]
+111 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [107 M_RD] via MRF
+    <- [110 V_RD] via pipe
+112 S_WR                 defs=[('REG', 16)] uses=[]
+113 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [111 MV_MUL] via pipe
+114 S_WR                 defs=[('REG', 15)] uses=[]
+115 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 6, 0)]
+    <- [27 V_WR] via VRF[6][0]
+116 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [115 V_RD] via pipe
+117 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+118 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [117 V_RD] via pipe
+119 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+120 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [119 V_RD] via pipe
+121 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+122 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [121 V_RD] via pipe
+123 M_RD                 defs=[('MRF',)] uses=[]
+124 S_WR                 defs=[('REG', 15)] uses=[]
+125 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [113 V_WR] via VRF[7][0]
+126 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [125 V_RD] via pipe
+127 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [126 V_WR] via VRF[5][0]
+128 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [123 M_RD] via MRF
+    <- [127 V_RD] via pipe
+129 S_WR                 defs=[('REG', 15)] uses=[]
+130 V_FUNC/SOFTMAX       defs=[('pipe',)] uses=[('pipe',)]
+    <- [128 MV_MUL] via pipe
+131 V_WR                 defs=[('VRF', 9, 0)] uses=[('pipe',)]
+    <- [130 V_FUNC/SOFTMAX] via pipe
+132 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+133 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [132 V_RD] via pipe
+134 S_WR                 defs=[('REG', 15)] uses=[]
+135 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 6, 4)]
+    <- [45 V_WR] via VRF[6][4]
+136 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [135 V_RD] via pipe
+137 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+138 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [137 V_RD] via pipe
+139 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+140 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [139 V_RD] via pipe
+141 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+142 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [141 V_RD] via pipe
+143 S_WR                 defs=[('REG', 15)] uses=[]
+144 M_RD                 defs=[('MRF',)] uses=[]
+145 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 2304)]
+146 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [145 V_RD_DRAM] via pipe
+147 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [146 V_WR] via VRF[5][0]
+148 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [144 M_RD] via MRF
+    <- [147 V_RD] via pipe
+149 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [148 MV_MUL] via pipe
+150 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 2308)]
+151 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [150 V_RD_DRAM] via pipe
+152 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [151 V_WR] via VRF[5][0]
+153 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [144 M_RD] via MRF
+    <- [152 V_RD] via pipe
+154 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [153 MV_MUL] via pipe
+155 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+156 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [155 V_RD] via pipe
+157 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+158 V_WR                 defs=[('VRF', 18, 0)] uses=[('pipe',)]
+    <- [157 V_RD] via pipe
+159 M_RD                 defs=[('MRF',)] uses=[]
+160 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 9, 0)]
+    <- [131 V_WR] via VRF[9][0]
+161 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [160 V_RD] via pipe
+162 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [161 V_WR] via VRF[5][0]
+163 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [159 M_RD] via MRF
+    <- [162 V_RD] via pipe
+164 S_WR                 defs=[('REG', 16)] uses=[]
+165 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [163 MV_MUL] via pipe
+166 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [165 V_WR] via VRF[7][0]
+167 V_WR                 defs=[('VRF', 6, 8)] uses=[('pipe',)]
+    <- [166 V_RD] via pipe
+168 S_WR                 defs=[('REG', 1)] uses=[]
+169 S_WR                 defs=[('REG', 2)] uses=[]
+170 S_WR                 defs=[('REG', 3)] uses=[]
+171 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+172 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [171 V_RD] via pipe
+173 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 8, 0)]
+174 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [173 V_RD] via pipe
+175 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [174 V_WR] via VRF[5][0]
+176 M_RD_DRAM            defs=[('MRF',)] uses=[('DRAM', 68)]
+177 M_WR                 defs=[] uses=[('MRF',)]
+    <- [176 M_RD_DRAM] via MRF
+178 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [175 V_RD] via pipe
+    <- [176 M_RD_DRAM] via MRF
+179 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [178 MV_MUL] via pipe
+180 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [179 V_WR] via VRF[7][0]
+181 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 84)]
+182 VV_ADD               defs=[('pipe',)] uses=[('pipe',), ('vpipe_a',)]
+    <- [181 V_RD_DRAM] via pipe
+    <- [181 V_RD_DRAM] via vpipe_a
+183 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [182 VV_ADD] via pipe
+184 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [183 V_WR] via VRF[7][0]
+185 V_WR                 defs=[('VRF', 6, 8)] uses=[('pipe',)]
+    <- [184 V_RD] via pipe
+186 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 0)]
+187 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [186 V_RD_DRAM] via pipe
+188 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [187 V_WR] via VRF[7][0]
+189 V_WR_DRAM            defs=[('DRAM', 1792)] uses=[('pipe',)]
+    <- [188 V_RD] via pipe
+190 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 6, 8)]
+    <- [185 V_WR] via VRF[6][8]
+191 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [187 V_WR] via VRF[7][0]
+192 VV_ADD               defs=[('pipe',)] uses=[('pipe',), ('vpipe_a',)]
+    <- [191 V_RD] via pipe
+    <- [191 V_RD] via vpipe_a
+193 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [192 VV_ADD] via pipe
+194 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [193 V_WR] via VRF[7][0]
+195 V_WR_DRAM            defs=[('DRAM', 1280)] uses=[('pipe',)]
+    <- [194 V_RD] via pipe
+196 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 128)]
+197 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [196 V_RD_DRAM] via pipe
+198 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 136)]
+199 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [198 V_RD_DRAM] via pipe
+200 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 1280)]
+    <- [195 V_WR_DRAM] via DRAM[0x500]
+201 V_FUNC/LAYERNORM     defs=[('pipe',)] uses=[('pipe',), ('VRF', 5, 0), ('VRF', 7, 0)]
+    <- [197 V_WR] via VRF[5][0]
+    <- [199 V_WR] via VRF[7][0]
+    <- [200 V_RD_DRAM] via pipe
+202 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [201 V_FUNC/LAYERNORM] via pipe
+203 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [202 V_WR] via VRF[7][0]
+204 V_WR                 defs=[('VRF', 6, 8)] uses=[('pipe',)]
+    <- [203 V_RD] via pipe
+205 S_WR                 defs=[('REG', 1)] uses=[]
+206 S_WR                 defs=[('REG', 2)] uses=[]
+207 S_WR                 defs=[('REG', 3)] uses=[]
+208 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+209 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [208 V_RD] via pipe
+210 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 8, 0)]
+211 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [210 V_RD] via pipe
+212 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [211 V_WR] via VRF[5][0]
+213 M_RD_DRAM            defs=[('MRF',)] uses=[('DRAM', 88)]
+214 M_WR                 defs=[] uses=[('MRF',)]
+    <- [213 M_RD_DRAM] via MRF
+215 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [212 V_RD] via pipe
+    <- [213 M_RD_DRAM] via MRF
+216 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [215 MV_MUL] via pipe
+217 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [216 V_WR] via VRF[7][0]
+218 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 104)]
+219 VV_ADD               defs=[('pipe',)] uses=[('pipe',), ('vpipe_a',)]
+    <- [218 V_RD_DRAM] via pipe
+    <- [218 V_RD_DRAM] via vpipe_a
+220 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [219 VV_ADD] via pipe
+221 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [220 V_WR] via VRF[7][0]
+222 V_GELU               defs=[('pipe',)] uses=[('pipe',)]
+    <- [221 V_RD] via pipe
+223 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [222 V_GELU] via pipe
+224 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [223 V_WR] via VRF[7][0]
+225 V_WR                 defs=[('VRF', 6, 8)] uses=[('pipe',)]
+    <- [224 V_RD] via pipe
+226 S_WR                 defs=[('REG', 1)] uses=[]
+227 S_WR                 defs=[('REG', 2)] uses=[]
+228 S_WR                 defs=[('REG', 3)] uses=[]
+229 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[]
+230 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [229 V_RD] via pipe
+231 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 8, 0)]
+232 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [231 V_RD] via pipe
+233 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 5, 0)]
+    <- [232 V_WR] via VRF[5][0]
+234 M_RD_DRAM            defs=[('MRF',)] uses=[('DRAM', 108)]
+235 M_WR                 defs=[] uses=[('MRF',)]
+    <- [234 M_RD_DRAM] via MRF
+236 MV_MUL               defs=[('pipe',)] uses=[('pipe',), ('MRF',)]
+    <- [233 V_RD] via pipe
+    <- [234 M_RD_DRAM] via MRF
+237 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [236 MV_MUL] via pipe
+238 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [237 V_WR] via VRF[7][0]
+239 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 124)]
+240 VV_ADD               defs=[('pipe',)] uses=[('pipe',), ('vpipe_a',)]
+    <- [239 V_RD_DRAM] via pipe
+    <- [239 V_RD_DRAM] via vpipe_a
+241 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [240 VV_ADD] via pipe
+242 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [241 V_WR] via VRF[7][0]
+243 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 1792)]
+    <- [189 V_WR_DRAM] via DRAM[0x700]
+244 VV_ADD               defs=[('pipe',)] uses=[('pipe',), ('vpipe_a',)]
+    <- [243 V_RD_DRAM] via pipe
+    <- [243 V_RD_DRAM] via vpipe_a
+245 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [244 VV_ADD] via pipe
+246 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [245 V_WR] via VRF[7][0]
+247 V_WR_DRAM            defs=[('DRAM', 1280)] uses=[('pipe',)]
+    <- [246 V_RD] via pipe
+248 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 144)]
+249 V_WR                 defs=[('VRF', 5, 0)] uses=[('pipe',)]
+    <- [248 V_RD_DRAM] via pipe
+250 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 152)]
+251 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [250 V_RD_DRAM] via pipe
+252 V_RD_DRAM            defs=[('pipe',), ('vpipe_a',)] uses=[('DRAM', 1280)]
+    <- [247 V_WR_DRAM] via DRAM[0x500]
+253 V_FUNC/LAYERNORM     defs=[('pipe',)] uses=[('pipe',), ('VRF', 5, 0), ('VRF', 7, 0)]
+    <- [249 V_WR] via VRF[5][0]
+    <- [251 V_WR] via VRF[7][0]
+    <- [252 V_RD_DRAM] via pipe
+254 V_WR                 defs=[('VRF', 7, 0)] uses=[('pipe',)]
+    <- [253 V_FUNC/LAYERNORM] via pipe
+255 V_RD                 defs=[('pipe',), ('vpipe_a',)] uses=[('VRF', 7, 0)]
+    <- [254 V_WR] via VRF[7][0]
+256 V_WR_DRAM            defs=[('DRAM', 2048)] uses=[('pipe',)]
+    <- [255 V_RD] via pipe
+257 S_WR                 defs=[('REG', 20)] uses=[]

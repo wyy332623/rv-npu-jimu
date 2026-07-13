@@ -1,0 +1,1 @@
+{"total_bytes": 5472, "dram_stats": {"vec_rd_elements": 600, "vec_wr_elements": 192, "mat_rd_elements": 576, "mat_wr_elements": 0, "vec_rd_ops": 150, "vec_wr_ops": 48, "mat_rd_ops": 36, "mat_wr_ops": 0}, "instr_count": 1919}

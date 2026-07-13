@@ -1,0 +1,5 @@
+WORKLOAD_NAME="adder_140p"
+MAKE_TARGET="adder_140p"
+TARGET_FILE="adderboard/firmware/adder_140p.c"
+TEST_VERIFY_CMD="python3 -m pytest adderboard/tests/test_phase2.py -k \"140p and first_step\" -s --no-header 2>&1 | grep max_diff"
+TEST_CONVERGE_CMD="python3 -m pytest adderboard/tests/test_phase2.py -k \"140p and (first_step or autoregressive)\" --no-header -q 2>&1 | tail -3"

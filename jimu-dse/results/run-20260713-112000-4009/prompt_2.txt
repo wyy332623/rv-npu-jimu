@@ -1,0 +1,27 @@
+You are optimizing NPU firmware at adderboard/firmware/adder_140p.c.
+
+Goal: adder (dim=4, hidden=4, num_head=2)
+Current header: /* NPU — Trained 140p Qwen3 Forward Pass Firmware
+Primary metric: test_pass
+MV_MUL count: 
+M_RD_DRAM ops (weight tile loads): 
+Current DRAM: seq=5=0B, seq=5=0B (ratio 0)
+
+=== DRAM Cluster Analysis (seq=5) ===
+
+
+=== Tile Structure Analysis ===
+
+
+=== Skills to Apply ===
+1. Read jimu-dse/results/dag_agent/micro_op_dag.txt
+   and jimu-dse/docs/skills/isa/dag-analyze.md to apply the dag-analyze transformation.
+
+- Keep all existing functions (mvm_tiled_q, etc.) intact — only add VRF cache
+=== Constraints ===
+- Only modify adderboard/firmware/adder_140p.c
+- Do NOT modify the emulator or any other file
+- File must compile: gcc for RISC-V (NATIVE_DIM=4)
+
+=== Self-Verify ===
+python3 -m pytest adderboard/tests/test_phase2.py -k "140p and first_step" -s --no-header 2>&1 | grep max_diff

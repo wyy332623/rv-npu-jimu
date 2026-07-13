@@ -42,11 +42,11 @@ PROBE → ANALYZE → AGENT → VALIDATE → DEPLOY → LOOP
 
 | Phase | What happens | Backend |
 |-------|-------------|---------|
-| **PROBE** | Build firmware, run on emulator at seq=2 and seq=6, measure DRAM traffic + instruction trace + DAG clusters | Emulator (`npu_device_mini.py`) + DAG (`visualize_graph.py`) |
-| **ANALYZE** | Compare seq6/seq2 DRAM ratio, detect save-load pairs from DAG, compute arithmetic intensity per cluster | `npu_closed_loop.sh` |
-| **AGENT** | AI agent (`pi`) reads DAG + DRAM clusters + skills, generates candidate patch to `bert_layer.c` | pi + skill library (`jimu-dse/docs/skills/`) |
-| **VALIDATE** | Rebuild firmware with candidate, re-run emulator, measure DRAM improvement vs run-start baseline | Emulator |
-| **DEPLOY** | Save candidate to run directory, generate post-opt DAG graphs for audit, restore baseline for next iteration | `npu_closed_loop.sh` |
+| **PROBE** | Build firmware based on the current workload (e.g. `bert`, `adder`), run on emulator, measure DRAM traffic + instruction trace + DAG clusters | Emulator (`npu_device_mini.py`) + DAG (`visualize_graph.py`) |
+| **ANALYZE** | Compare DRAM ratio, detect save-load pairs from DAG, compute arithmetic intensity per cluster | `npu_closed_loop.sh` |
+| **AGENT** | AI agent (`pi` or `opencode`) reads DAG + DRAM clusters + target skills, generates candidate patch to target firmware | AI agent + skill library (`jimu-dse/docs/skills/`) |
+| **VALIDATE** | Rebuild firmware with candidate, re-run emulator, test pass/fail via workload-specific tests (e.g. pytest) | Emulator / `pytest` |
+| **DEPLOY** | Save candidate to run directory, generate post-opt DAG graphs for audit | `npu_closed_loop.sh` |
 
 ### 1.2 The Loop in Detail
 

@@ -1,11 +1,18 @@
 """
 NPU — Standalone MMIO Device (no PySpike dependency).
 
-Reference-aligned emulator backend. Matches NfuEmulator.cpp dispatch.
+Reference-aligned emulator backend. Matches NfuEmulator.cpp dispatch:
+  execute() -> s_wr / v_rd / v_wr / m_rd / m_wr / mv_mul /
+               vv_add_sub_cmp_impl / vv_mul_impl / v_activation_impl /
+               v_func { softmax | layernorm } / ...
 
-No pipeline register: values are threaded locally through execute()
-calls within a chain group.  Chain boundaries (INST_ISSUE) discard
-the pipeline.
+Memory model (reference: m_vec_mems[memId], m_mat_mems[memId]):
+  Vector RF: DRAM, MultiplyVrf, MvmInitialVrf, MfuInitialVrf,
+             AddSubVrf_0/1/2, NetOutputQ, NetInputQ
+  Matrix RF: MatrixRf
+
+Uses ctypes to call C kernel library for compute.
+For cycle-accurate RTL sim, use sim.backend_verilator instead.
 """
 
 from pathlib import Path
@@ -18,7 +25,6 @@ import numpy as np
 NPU_INST_FIFO     = 0x00
 NPU_STATUS        = 0x04
 NPU_RESET         = 0x08
-NPU_CHAIN_STATUS  = 0x0C
 NPU_DATA_IN_ADDR  = 0x10
 NPU_DATA_OUT_ADDR = 0x14
 NPU_DATA_IN_SIZE  = 0x18
@@ -32,12 +38,13 @@ STATUS_IDLE = 0x00
 STATUS_BUSY = 0x01
 STATUS_DONE = 0x02
 
+# ── NPU internal register addresses (firmware:npu_driver.h) ─────────
 REG_TILE_ROWS      = 1
 REG_TILE_COLS      = 2
 REG_ITERATIONS     = 3
 REG_VECTOR_LENGTH  = 10
 
-# ── Opcodes ──────────────────────────────────────────────────────────
+# ── Opcodes (matching ISA.bond, npu_isa.h) ──────────────────────────
 OP_S_WR   = 0;  OP_S_RD   = 1
 OP_V_RD   = 2;  OP_M_RD   = 3
 OP_V_WR   = 5;  OP_M_WR   = 6
@@ -64,17 +71,17 @@ OP_S_RECIP = 35; OP_S_SQRT = 38; OP_SS_MUL = 40
 SUB_SOFTMAX   = 0
 SUB_LAYERNORM = 1
 
-# ── Memory targets ───────────────────────────────────────────────────
+# ── Memory targets (matching ISA.bond Mem enum) ──────────────────────
 MEM_DRAM            = 0
 MEM_MULTIPLY_VRF    = 1
 MEM_NET_OUTPUT_Q    = 2
 MEM_NET_INPUT_Q     = 3
 MEM_MVM_ACC_VRF     = 13
-MEM_SPU_ADD_REDUCE   = 14
-MEM_SPU_MAX_REDUCE   = 15
-MEM_SPU_ABSMAX_REDUCE = 16
-MEM_SPU_BROADCAST    = 17
-MEM_VEC_TO_MAT_ROW   = 18
+MEM_SPU_ADD_REDUCE   = 14  # sum elements → SRF
+MEM_SPU_MAX_REDUCE   = 15  # max element → SRF
+MEM_SPU_ABSMAX_REDUCE = 16 # max|element| → SRF
+MEM_SPU_BROADCAST    = 17  # broadcast SRF → pipeline
+MEM_VEC_TO_MAT_ROW   = 18  # accumulate vectors into row buffer for MRF
 
 MEM_MATRIX_RF       = 4
 MEM_MVM_INITIAL_VRF = 5
@@ -84,6 +91,7 @@ MEM_ADDSUB_VRF_1    = 8
 MEM_ADDSUB_VRF_2    = 19
 MEM_FILL            = 12
 
+# ── VRF sizes (from sku_bert_np.py SkuParams) ───────────────────────
 VRF_SIZES = {
     MEM_MVM_INITIAL_VRF: 20480,
     MEM_MFU_INITIAL_VRF: 4096,
@@ -95,44 +103,62 @@ VRF_SIZES = {
     MEM_FILL:              1,
 }
 
-NATIVE_DIM_DEFAULT = 128
-NATIVE_DIM = NATIVE_DIM_DEFAULT
+NATIVE_DIM_DEFAULT = 128  # from SKU
+NATIVE_DIM = NATIVE_DIM_DEFAULT  # backward-compatible alias
 
 
 class NpuDeviceMini:
     """Reference-aligned NPU MMIO device emulator.
 
-    No pipeline register.  Within a chain, execute() threads
-    (pipeline, vpipe_a) as local variables.  Chain boundaries
-    (INST_ISSUE) discard them.
+    Translates firmware instructions to C kernel calls.
+    Register file model matches NfuEmulator's m_vec_mems/m_mat_mems.
+
+    Parameters
+    ----------
+    native_dim : int, optional
+        Logical vector dimension.  Defaults to 128 (SKU BERT-NP).
+        Pass 8 for dim=8 integration tests so that DRAM addressing
+        and VRF widths match the firmware compiled with NATIVE_DIM=8.
     """
 
     def __init__(self, native_dim=None):
         self.native_dim = native_dim or NATIVE_DIM_DEFAULT
-        self._hidden_size = self.native_dim
-        self._seq_len = 1
-        self._spu_srf = np.zeros(64, dtype=np.float32)
-        self._dram_stats = {
-            'vec_rd_elements': 0, 'vec_wr_elements': 0,
-            'mat_rd_elements': 0, 'mat_wr_elements': 0,
-            'vec_rd_ops': 0, 'vec_wr_ops': 0,
-            'mat_rd_ops': 0, 'mat_wr_ops': 0,
+        self._hidden_size = self.native_dim  # default = NATIVE_DIM
+        self._seq_len = 1  # default = 1
+        self._spu_srf = np.zeros(64, dtype=np.float32)  # SPU scalar register file
+        self._dram_stats = {  # DRAM traffic counters
+            'vec_rd_elements': 0,  # elements read via V_RD_DRAM
+            'vec_wr_elements': 0,  # elements written via V_WR_DRAM
+            'mat_rd_elements': 0,  # elements read via M_RD_DRAM
+            'mat_wr_elements': 0,  # elements written via M_WR_DRAM
+            'vec_rd_ops': 0,       # count of V_RD_DRAM instructions
+            'vec_wr_ops': 0,       # count of V_WR_DRAM instructions
+            'mat_rd_ops': 0,       # count of M_RD_DRAM instructions
+            'mat_wr_ops': 0,       # count of M_WR_DRAM instructions
         }
         self._status = STATUS_IDLE
-        self._regs = {}
-        self._data = bytearray()
-        self._dram_addr = 0
-        self._chain_busy = 0    # CHAIN_STATUS: bit0=VMM, bit1=MMM, bit2=MVU
+        self._regs = {}          # scalar registers (REG_*)
+        self._data = bytearray()  # data buffer
+        self._pipeline = None    # vector pipeline (result of last compute)
+        self._vpipe_a = None     # operand A for VV ops
+        self._vpipe_b = None     # operand B for VV ops
+        self._dram_addr = 0      # DRAM address for auto-increment (INC variants)
 
+        # Reference: m_vec_mems[memId] — map-based VRF storage
         self._vrf = {mem: np.zeros(sz, dtype=np.float32)
                      for mem, sz in VRF_SIZES.items()}
-        self._vrf[MEM_DRAM] = np.zeros(524288, dtype=np.float32)
+        self._vrf[MEM_DRAM] = np.zeros(524288, dtype=np.float32)  # 512K
         self._vrf[MEM_NET_OUTPUT_Q] = np.zeros(1024, dtype=np.float32)
         self._vrf[MEM_NET_INPUT_Q] = np.zeros(1024, dtype=np.float32)
 
+        # Reference: m_mat_mems[memId] — matrix RF
         mrf_n = self.native_dim
         self._mrf = {MEM_MATRIX_RF: np.zeros((mrf_n, mrf_n), dtype=np.float32)}
-        self._row_buffer = {}
+
+        # Row buffer for VecToMatRow: accumulates vectors into MRF rows
+        self._row_buffer = {}   # key → list of ndarrays (rows)
+
+        # Load C kernel library
         self._lib = self._load_library()
 
     def _load_library(self):
@@ -142,7 +168,8 @@ class NpuDeviceMini:
                 lib = ctypes.CDLL(str(Path(p).resolve()))
                 self._setup_ctypes(lib)
                 return lib
-        raise FileNotFoundError("libnpukernels.so not found (build: make kernels)")
+        raise FileNotFoundError(
+            "libnpukernels.so not found (build: make kernels)")
 
     def _setup_ctypes(self, lib):
         LP = ctypes.POINTER(ctypes.c_float)
@@ -168,14 +195,23 @@ class NpuDeviceMini:
     def _ptr(self, arr):
         return arr.ctypes.data_as(ctypes.POINTER(ctypes.c_float))
 
+    # ── MMIO interface ─────────────────────────────────────────────
     def set_hidden_size(self, hs):
+        """Set hidden_size for the firmware to read from MMIO 0x20."""
         self._hidden_size = hs
-
+    
     def set_seq_len(self, sl):
+        """Set seq_len for the firmware to read from MMIO 0x24."""
         self._seq_len = sl
-
+    
     def get_dram_stats(self):
+        """Return DRAM traffic counters as a dict."""
         return dict(self._dram_stats)
+    
+    # ── MMIO register map bounds ──
+    #   0x00 - 0x3F:  Control/status registers
+    #   0x40 - 0x3FFF: DRAM window (64K floats = 256KB = half the DRAM)
+    #   0x4000 - 0x40FF: SPU SRF window (64 registers × 4 bytes = 256 bytes)
 
     NPU_DRAM_BASE = 0x40
     NPU_DRAM_END  = 0x8000
@@ -189,10 +225,9 @@ class NpuDeviceMini:
         return (addr - self.NPU_SRF_BASE) // 4
 
     def load(self, addr: int, size: int) -> bytes:
+        # Control/status registers
         if addr == NPU_STATUS:
             return self._status.to_bytes(4, 'little')
-        elif addr == NPU_CHAIN_STATUS:
-            return self._chain_busy.to_bytes(4, 'little')
         elif addr == NPU_DATA_OUT_SIZE:
             return (len(self._data)).to_bytes(4, 'little')
         elif addr == NPU_REG_HIDDEN_SIZE:
@@ -203,21 +238,28 @@ class NpuDeviceMini:
             return (1).to_bytes(4, 'little')
         elif addr == NPU_VERSION:
             return (0x0500).to_bytes(4, 'little')
+
+        # DRAM window: CPU reads DRAM[float_offset]
         if self.NPU_DRAM_BASE <= addr < self.NPU_DRAM_END:
             off = self._dram_offset(addr)
             dram = self._vrf.get(MEM_DRAM)
             if dram is not None and 0 <= off < len(dram):
                 return np.float32(dram[off]).tobytes()
             return b'\x00' * 4
+
+        # SPU SRF window: CPU reads SRF[idx]
         if self.NPU_SRF_BASE <= addr < self.NPU_SRF_END:
             idx = self._srf_index(addr)
             if 0 <= idx < len(self._spu_srf):
                 return np.float32(self._spu_srf[idx]).tobytes()
             return b'\x00' * 4
+
         return b'\x00' * size
 
     def store(self, addr: int, data: bytes):
         val = int.from_bytes(data, 'little')
+
+        # Control/status registers
         if addr == NPU_INST_FIFO:
             self._push_instruction(val)
             return
@@ -225,6 +267,8 @@ class NpuDeviceMini:
             if val:
                 self._reset()
             return
+
+        # DRAM window: CPU writes DRAM[float_offset]
         if self.NPU_DRAM_BASE <= addr < self.NPU_DRAM_END:
             off = self._dram_offset(addr)
             dram = self._vrf.get(MEM_DRAM)
@@ -232,6 +276,8 @@ class NpuDeviceMini:
                 f32 = np.frombuffer(data, dtype=np.float32)[0]
                 dram[off] = f32
             return
+
+        # SPU SRF window: CPU writes SRF[idx]
         if self.NPU_SRF_BASE <= addr < self.NPU_SRF_END:
             idx = self._srf_index(addr)
             if 0 <= idx < len(self._spu_srf):
@@ -254,51 +300,40 @@ class NpuDeviceMini:
         for mem in self._mrf:
             self._mrf[mem] = np.zeros(self._mrf[mem].shape, dtype=np.float32)
         self._data = bytearray()
+        self._pipeline = None
+        self._vpipe_a = None
+        self._vpipe_b = None
         self._status = STATUS_IDLE
-        self._chain_busy = 0
         self._row_buffer = {}
-
-    # ── Instruction dispatch ───────────────────────────────────────
-    #
-    # Pipeline values are local to a chain.  They persist between
-    # instructions via _chain_pipeline / _chain_vpipe_a, but are
-    # NOT stored as instance attributes for the chain to own.
-    # INST_ISSUE discards them.
 
     def _push_instruction(self, inst: int):
         self._status = STATUS_BUSY
         opcode = (inst >> 24) & 0xFF
+        # LO format (M_RD_DRAM, M_WR_DRAM): operand is full 24-bit address
+        # SI format: opd0=8bit, opd1=16bit
+        # Detect LO format by checking if opd0's bits 16:23 are zero
         opd0_8  = (inst >> 16) & 0xFF
         opd1_16 = inst & 0xFFFF
+        # LO opcodes have opcode >= 20 (m_rd_dram, v_rd_dram, etc.)
         if opcode >= 20:
-            opd0, opd1 = opd0_8, opd1_16
+            # LO format: operand is bits 23:0, split into opd0_8 and opd1_16
+            opd0 = opd0_8  # upper 8 bits of 24-bit address
+            opd1 = opd1_16  # lower 16 bits of 24-bit address
         else:
-            opd0, opd1 = opd0_8, opd1_16
-
-        pipeline = getattr(self, '_chain_pipeline', None)
-        vpipe_a = getattr(self, '_chain_vpipe_a', None)
-        pipeline_out, vpipe_a_out = self._execute(
-            opcode, opd0, opd1,
-            full_operand=(inst & 0xFFFFFF) if opcode >= 20 else 0,
-            pipeline=pipeline, vpipe_a=vpipe_a,
-        )
-        if opcode == OP_INST_ISSUE:
-            self._chain_pipeline = None
-            self._chain_vpipe_a = None
-            self._chain_busy = 0
-        else:
-            self._chain_pipeline = pipeline_out
-            self._chain_vpipe_a = vpipe_a_out
+            opd0 = opd0_8
+            opd1 = opd1_16
+        self._execute(opcode, opd0, opd1, full_operand=(inst & 0xFFFFFF) if opcode >= 20 else 0)
         self._status = STATUS_DONE
 
-    def _execute(self, opcode: int, opd0: int, opd1: int,
-                 full_operand: int = 0,
-                 pipeline=None, vpipe_a=None):
-        """Returns (pipeline_out, vpipe_a_out)."""
+    # ── Reference-aligned instruction dispatch ──────────────────────
+    def _execute(self, opcode: int, opd0: int, opd1: int, full_operand: int = 0):
+        """Matches NfuEmulator::execute() dispatch structure.
+        full_operand: 24-bit address for LO-format instructions.
+        """
         if opcode == OP_S_WR:
             self._s_wr(opcode, opd0, opd1)
-            return pipeline, vpipe_a
 
+        # ── INC variant handling: map to base opcode, set DRAM addr ──
         inc_map = {
             OP_V_RD_INC: OP_V_RD, OP_V_WR_INC: OP_V_WR,
             OP_V_RD_DRAM_INC: OP_V_RD_DRAM, OP_V_WR_DRAM_INC: OP_V_WR_DRAM,
@@ -309,195 +344,180 @@ class NpuDeviceMini:
         }
         base_opcode = inc_map.get(opcode, None)
         if base_opcode is not None:
+            # For INC variants, opd1 is the increment amount.
+            # Tile iteration: compute total vectors from registers.
             inc = opd1
-            tr = self._regs.get(1, 1)
-            tc = self._regs.get(2, 1)
-            iters = self._regs.get(3, 1)
-            vec_count = iters * tc
+            tile_rows = self._regs.get(1, 1)  # REG_TILE_ROWS
+            tile_cols = self._regs.get(2, 1)  # REG_TILE_COLS
+            iterations = self._regs.get(3, 1)  # REG_ITERATIONS
+            # Total vectors to transfer = iterations * tile_cols
+            # (matching npu_top's vmm_vec_count = reg_iterations * reg_tile_cols)
+            vec_count = iterations * tile_cols
             old_addr = self._dram_addr
-            p, v = pipeline, vpipe_a
-            for _ in range(vec_count):
-                p, v = self._execute(
-                    base_opcode, opd0, 0,
-                    full_operand=old_addr + inc,
-                    pipeline=p, vpipe_a=v,
-                )
-                old_addr += inc
-            self._dram_addr = old_addr
-            return p, v
+            for v in range(vec_count):
+                self._execute(base_opcode, opd0, 0, full_operand=old_addr + v * inc)
+            self._dram_addr = old_addr + vec_count * inc
+            return
 
-        if opcode == OP_V_RD:
-            return self._v_rd(opd0, opd1, pipeline=pipeline, vpipe_a=vpipe_a)
-        if opcode == OP_V_RD_DRAM:
-            return self._v_rd_dram(full_operand, pipeline=pipeline, vpipe_a=vpipe_a)
-        if opcode == OP_M_RD:
-            # Only VecToMatRow variant — DRAM variant uses OP_M_RD_DRAM
-            return self._m_rd(opd0, full_operand, pipeline=pipeline, vpipe_a=vpipe_a)
-        if opcode == OP_M_RD_DRAM:
-            self._chain_busy |= 0b0010  # MMM busy
-            self._m_rd_dram(full_operand)
-            return pipeline, vpipe_a
-        if opcode == OP_V_WR:
-            self._v_wr(opd0, opd1, pipeline=pipeline)
-            return pipeline, vpipe_a  # V_WR broadcasts: writes to target *and* keeps pipeline
-        if opcode == OP_V_WR_DRAM:
-            self._v_wr_dram(full_operand, pipeline=pipeline)
-            return pipeline, vpipe_a  # same: V_WR_DRAM writes *and* keeps pipeline
-        if opcode == OP_M_WR:
-            return pipeline, vpipe_a
-        if opcode == OP_M_WR_DRAM:
-            self._m_wr_dram(full_operand)
-            return pipeline, vpipe_a
-        if opcode == OP_MV_MUL:
-            self._chain_busy |= 0b0100  # MVU busy
-            return self._mv_mul(pipeline=pipeline), None
-        if opcode == OP_VV_MUL:
-            self._chain_busy |= 0b0001  # VMM busy
-            return self._vv_binop(self._vv_mul_impl, vpipe_a, pipeline), None
-        if opcode in (OP_VV_ADD, OP_VV_A_SUB_B, OP_VV_B_SUB_A,
-                       OP_VV_MIN, OP_VV_MAX):
-            self._chain_busy |= 0b0001  # VMM busy
-            return self._vv_add_sub_impl(opcode, vpipe_a, pipeline), None
-        if opcode in (OP_V_SIGM, OP_V_TANH, OP_V_RELU, OP_V_GELU, OP_V_EXP):
-            self._chain_busy |= 0b0001  # VMM busy
-            return self._v_activation(opcode, pipeline), None
-        if opcode == OP_V_FUNC:
-            self._chain_busy |= 0b0001  # VMM busy
-            if opd0 == SUB_SOFTMAX:
-                return self._v_softmax(pipeline), None
-            elif opd0 == SUB_LAYERNORM:
-                return self._v_layernorm(pipeline), None
-            return pipeline, vpipe_a
-        if opcode == OP_INST_ISSUE:
-            return None, None
-        if opcode == OP_SS_ADD:
-            return pipeline, vpipe_a
-        if opcode in (OP_S_RECIP, OP_S_SQRT, OP_SS_MUL):
-            # scalar op — no VMM/MMM/MVU busy
+        elif opcode == OP_V_RD:
+            self._v_rd(opcode, opd0, opd1)
+        elif opcode == OP_V_RD_DRAM:
+            self._v_rd_dram(opcode, opd0, opd1, full_operand)
+
+        elif opcode in (OP_M_RD, OP_M_RD_DRAM):
+            self._m_rd(opcode, opd0, opd1, full_operand)
+
+        elif opcode == OP_V_WR:
+            self._v_wr(opcode, opd0, opd1)
+        elif opcode == OP_V_WR_DRAM:
+            self._v_wr_dram(opcode, opd0, opd1, full_operand)
+
+        elif opcode == OP_M_WR:
+            pass  # no-op — matches HDL (npu_top: `with m.Case(OP_M_WR): pass`)
+        elif opcode == OP_M_WR_DRAM:
+            self._m_wr(opcode, opd0, opd1, full_operand)
+
+        elif opcode == OP_MV_MUL:
+            self._mv_mul(opcode, opd0, opd1)
+
+        elif opcode == OP_VV_MUL:
+            self._vv_mul(opcode, opd0, opd1)
+
+        elif opcode in (OP_VV_ADD, OP_VV_A_SUB_B, OP_VV_B_SUB_A,
+                        OP_VV_MIN, OP_VV_MAX):
+            self._vv_add_sub(opcode, opd0, opd1)
+
+        elif opcode in (OP_V_SIGM, OP_V_TANH, OP_V_RELU,
+                        OP_V_GELU, OP_V_EXP):
+            self._v_activation(opcode, opd0, opd1)
+
+        elif opcode == OP_V_FUNC:
+            sub = opd0
+            if sub == SUB_SOFTMAX:
+                self._v_softmax(opcode, opd0, opd1)
+            elif sub == SUB_LAYERNORM:
+                self._v_layernorm(opcode, opd0, opd1)
+
+        elif opcode == OP_INST_ISSUE:
+            pass  # chain marker — handled by dispatcher
+
+        elif opcode == OP_SS_ADD:
+            pass  # scalar add — handled by control processor
+
+        elif opcode in (OP_S_RECIP, OP_S_SQRT, OP_SS_MUL):
             self._spu_func(opcode, opd0, opd1)
-            return pipeline, vpipe_a
-        return pipeline, vpipe_a
 
-    # ── Opcode handlers ────────────────────────────────────────────
-    #
-    # All handlers take pipeline/vpipe_a as arguments and return
-    # (pipeline_out, vpipe_a_out).  Writes (V_WR, V_WR_DRAM) consume
-    # the pipeline and return (None, None).
+        # else: unsupported opcode — just acknowledge
+
+    # ── Opcode handlers (matching reference method names) ───────────
 
     def _s_wr(self, opcode, opd0, opd1):
+        """Scalar write: store opd1 into internal register opd0."""
         self._regs[opd0] = opd1
 
-    def _v_rd(self, opd0, opd1, pipeline=None, vpipe_a=None):
-        """Vector read: load VRF → pipeline, save old pipeline as vpipe_a."""
-        self._chain_busy |= 0b0001  # VMM busy
-        mem_target, addr = opd0, opd1
+    # ── Pipeline data flow ─────────────────────────────────────────
+    # In the reference, instructions operate on a data pipeline.
+    # V_RD loads FROM memory INTO the pipeline.
+    # Compute ops (MV_MUL, VV_*) read FROM pipeline, write TO pipeline.
+    # V_WR stores FROM pipeline TO memory.
+    # We track the pipeline as _pipeline (ndarray, float32).
+
+    def _v_rd(self, opcode, opd0, opd1):
+        """Vector read: load native_dim elements from VRF starting at opd1."""
+        mem_target = opd0
+        addr = opd1
         if mem_target == MEM_FILL:
-            val = np.float32(np.frombuffer(
-                np.uint16([addr]).tobytes(), dtype=np.float16)[0])
-            return np.full(self.native_dim, val, dtype=np.float32), pipeline
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
+            self._pipeline = np.full(self.native_dim, np.float32(np.frombuffer(
+                np.uint16([addr]).tobytes(), dtype=np.float16)[0]), dtype=np.float32)
+            return
         if mem_target == MEM_SPU_BROADCAST:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
             val = self._spu_srf[addr] if addr < len(self._spu_srf) else 0.0
-            return np.full(self.native_dim, val, dtype=np.float32), pipeline
+            self._pipeline = np.full(self.native_dim, val, dtype=np.float32)
+            return
         vrf = self._vrf.get(mem_target)
         if vrf is not None:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
+            # Load native_dim elements starting at addr (matching reference ISA)
             n = min(self.native_dim, max(0, len(vrf) - addr))
-            result = np.zeros(self.native_dim, dtype=np.float32)
+            self._pipeline = np.zeros(self.native_dim, dtype=np.float32)
             if n > 0:
-                result[:n] = np.float16(vrf[addr:addr + n]).astype(np.float32)
-            return result, pipeline
-        return np.zeros(self.native_dim, dtype=np.float32), pipeline
+                # Load from VRF and round to FP16, matching HDL pipe width.
+                # Promoted back to float32 for C kernel compatibility.
+                self._pipeline[:n] = np.float16(vrf[addr:addr + n]).astype(np.float32)
 
-    def _v_rd_dram(self, full_operand, pipeline=None, vpipe_a=None):
-        """Vector read from DRAM: DRAM[addr] → pipeline."""
-        self._chain_busy |= 0b0001  # VMM busy
-        dram = self._vrf.get(MEM_DRAM)
-        if dram is not None:
-            addr = full_operand
-            n = min(self.native_dim, len(dram) - addr) if addr < len(dram) else 0
-            result = np.zeros(self.native_dim, dtype=np.float32)
-            if n > 0:
-                self._dram_stats['vec_rd_elements'] += n
-                self._dram_stats['vec_rd_ops'] += 1
-                rmask = self._regs.get(15, 0xFF)
-                for i in range(n):
-                    if (rmask >> (i % 8)) & 1:
-                        result[i] = np.float16(dram[addr + i]).astype(np.float32)
-            return result, pipeline
-        return np.zeros(self.native_dim, dtype=np.float32), pipeline
-
-    def _v_wr(self, opd0, opd1, pipeline=None):
-        """Vector write: pipeline → VRF (or row buffer / SPU reduce)."""
-        if pipeline is None:
+    def _v_wr(self, opcode, opd0, opd1):
+        """Vector write: store pipeline to VRF starting at opd1."""
+        mem_target = opd0
+        addr = opd1
+        if self._pipeline is None:
             return
-        self._chain_busy |= 0b0001  # VMM busy
-        mem_target, addr = opd0, opd1
+
+        # VecToMatRow: accumulate pipeline into row buffer
         if mem_target == MEM_VEC_TO_MAT_ROW:
-            key = 0
+            key = 0  # single row buffer
             if key not in self._row_buffer:
                 self._row_buffer[key] = []
-            self._row_buffer[key].append(pipeline.copy())
+            self._row_buffer[key].append(self._pipeline.copy())
             return
+        
+        # SPU reduce operations
         if mem_target == MEM_SPU_ADD_REDUCE:
             if addr < len(self._spu_srf):
-                self._spu_srf[addr] = float(np.sum(pipeline)) + self._spu_srf[addr]
+                self._spu_srf[addr] = float(np.sum(self._pipeline)) + self._spu_srf[addr]
             return
-        if mem_target in (MEM_SPU_MAX_REDUCE, MEM_SPU_ABSMAX_REDUCE):
+        if mem_target == MEM_SPU_MAX_REDUCE or mem_target == MEM_SPU_ABSMAX_REDUCE:
             if addr < len(self._spu_srf):
-                data = pipeline if mem_target == MEM_SPU_MAX_REDUCE else np.abs(pipeline)
+                data = self._pipeline if mem_target == MEM_SPU_MAX_REDUCE else np.abs(self._pipeline)
                 self._spu_srf[addr] = max(float(np.max(data)), self._spu_srf[addr])
             return
+        
         vrf = self._vrf.setdefault(mem_target,
                                     np.zeros(self.native_dim * 8, dtype=np.float32))
-        wmask = self._regs.get(16, 0xFF)
+        # Apply write vector mask
+        wmask = self._regs.get(16, 0xFF)  # REG_WRITE_VECTOR_MASK, default all ones
+        # Write pipeline to VRF starting at addr, masked
         n = min(self.native_dim, max(0, len(vrf) - addr))
         if n > 0:
             for i in range(n):
                 if (wmask >> (i % 8)) & 1:
-                    vrf[addr + i] = np.float16(pipeline[i])
+                    # Store as FP16, matching HDL VRF register width
+                    vrf[addr + i] = np.float16(self._pipeline[i])
 
-    def _v_wr_dram(self, full_operand, pipeline=None):
-        """Vector write to DRAM: pipeline → DRAM[addr]."""
-        if pipeline is None:
+    def _m_rd(self, opcode, opd0, opd1, full_operand=0):
+        """Matrix read: load matrix from DRAM or row buffer into MRF."""
+        # VecToMatRow: construct MRF from accumulated row buffer
+        if opd0 == MEM_VEC_TO_MAT_ROW:
+            key = 0
+            rows = self._row_buffer.get(key, [])
+            n = self.native_dim
+            mat = np.zeros((n, n), dtype=np.float32)
+            for i, row in enumerate(rows[:n]):
+                mat[i, :len(row)] = row[:n]
+            self._mrf[MEM_MATRIX_RF] = mat.copy()
+            # Clear the row buffer after reading
+            self._row_buffer[key] = []
             return
-        self._chain_busy |= 0b0001  # VMM busy
+
         addr = full_operand
         dram = self._vrf.get(MEM_DRAM)
-        if dram is not None:
-            n = min(self.native_dim, len(pipeline), len(dram) - addr) if addr < len(dram) else 0
-            if n > 0:
-                self._dram_stats['vec_wr_elements'] += n
-                self._dram_stats['vec_wr_ops'] += 1
-                dram[addr:addr + n] = np.float16(pipeline[:n])
+        if dram is not None and addr < len(dram):
+            n = self._regs.get(REG_TILE_ROWS, 1) * self.native_dim
+            mrf_size = n * n
+            if addr + mrf_size <= len(dram):
+                self._dram_stats['mat_rd_elements'] += mrf_size
+                self._dram_stats['mat_rd_ops'] += 1
+                # Read from DRAM and round to FP16, matching HDL MRF width.
+                # Store as float32 (C kernel expects float*) with fp16-exact values.
+                mat = np.float16(dram[addr:addr + mrf_size]).astype(np.float32).reshape(n, n).copy()
+                self._mrf[MEM_MATRIX_RF] = mat
 
-    def _m_rd(self, opd0, full_operand, pipeline=None, vpipe_a=None):
-        """Matrix read from row buffer (VecToMatRow) into MRF."""
-        self._chain_busy |= 0b0010  # MMM busy
-        key = 0
-        rows = self._row_buffer.get(key, [])
-        n = self.native_dim
-        mat = np.zeros((n, n), dtype=np.float32)
-        for i, row in enumerate(rows[:n]):
-            mat[i, :len(row)] = row[:n]
-        self._mrf[MEM_MATRIX_RF] = mat.copy()
-        self._row_buffer[key] = []
-        return pipeline, vpipe_a
-
-    def _m_rd_dram(self, full_operand):
-        """Matrix read from DRAM into MRF."""
-        dram = self._vrf.get(MEM_DRAM)
-        if dram is not None:
-            addr = full_operand
-            if addr < len(dram):
-                n = self._regs.get(REG_TILE_ROWS, 1) * self.native_dim
-                mrf_size = n * n
-                if addr + mrf_size <= len(dram):
-                    self._dram_stats['mat_rd_elements'] += mrf_size
-                    self._dram_stats['mat_rd_ops'] += 1
-                    mat = np.float16(dram[addr:addr + mrf_size]).astype(np.float32).reshape(n, n).copy()
-                    self._mrf[MEM_MATRIX_RF] = mat
-
-    def _m_wr_dram(self, full_operand):
-        """Matrix write: MRF → DRAM."""
+    def _m_wr(self, opcode, opd0, opd1, full_operand=0):
+        """Matrix write: store MRF to DRAM."""
         mrf = self._mrf.get(MEM_MATRIX_RF)
         if mrf is not None:
             flat = mrf.flatten()
@@ -506,134 +526,213 @@ class NpuDeviceMini:
             if dram is not None and addr + len(flat) <= len(dram):
                 self._dram_stats['mat_wr_elements'] += len(flat)
                 self._dram_stats['mat_wr_ops'] += 1
+                # Store as FP16, matching HDL DRAM width
                 dram[addr:addr + len(flat)] = np.float16(flat)
 
-    # ── Compute helpers ────────────────────────────────────────────
+    def _v_rd_dram(self, opcode, opd0, opd1, full_operand=0):
+        """Vector read from DRAM at 24-bit address, with read mask."""
+        addr = full_operand
+        dram = self._vrf.get(MEM_DRAM)
+        if dram is not None:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
+            n = min(self.native_dim, len(dram) - addr) if addr < len(dram) else 0
+            self._pipeline = np.zeros(self.native_dim, dtype=np.float32)
+            if n > 0:
+                self._dram_stats['vec_rd_elements'] += n
+                self._dram_stats['vec_rd_ops'] += 1
+                # Apply read vector mask (register 15)
+                rmask = self._regs.get(15, 0xFF)
+                for i in range(n):
+                    if (rmask >> (i % 8)) & 1:
+                        # Read from DRAM and round to FP16, matching HDL.
+                        self._pipeline[i] = np.float16(dram[addr + i]).astype(np.float32)
 
-    @staticmethod
-    def _round_fp16(arr):
-        return arr.astype(np.float16).astype(np.float32) if arr is not None else None
+    def _v_wr_dram(self, opcode, opd0, opd1, full_operand=0):
+        """Vector write to DRAM at 24-bit address."""
+        addr = full_operand
+        dram = self._vrf.get(MEM_DRAM)
+        if dram is not None and self._pipeline is not None:
+            pipeline_n = len(self._pipeline)
+            n = min(self.native_dim, pipeline_n, len(dram) - addr) if addr < len(dram) else 0
+            if n > 0:
+                self._dram_stats['vec_wr_elements'] += n
+                self._dram_stats['vec_wr_ops'] += 1
+                # Store as FP16, matching HDL DRAM width
+                dram[addr:addr + n] = np.float16(self._pipeline[:n])
 
-    def _store_to_ivrf(self, pipeline):
-        if pipeline is not None:
-            p = self._round_fp16(pipeline)
+    def _pipeline_round_fp16(self):
+        """Round pipeline values to FP16, matching HW datapath."""
+        if self._pipeline is not None:
+            self._pipeline = self._pipeline.astype(np.float16).astype(np.float32)
+
+    def _clear_vv(self):
+        self._vpipe_a = None
+
+    def _store_to_ivrf(self):
+        """Auto-store pipeline to IVRF after compute."""
+        if self._pipeline is not None:
+            self._pipeline_round_fp16()
             ivrf = self._vrf.get(MEM_MVM_INITIAL_VRF)
             if ivrf is not None:
-                n = min(len(ivrf), len(p))
-                ivrf[:n] = p[:n]
+                n = min(len(ivrf), len(self._pipeline))
+                ivrf[:n] = self._pipeline[:n]
 
-    def _mv_mul(self, pipeline=None):
-        """MRF × pipeline → result."""
+    def _mv_mul(self, opcode, opd0, opd1):
+        """Matrix-vector multiply: MRF × pipeline → pipeline."""
+        self._clear_vv()
         mrf = self._mrf.get(MEM_MATRIX_RF)
-        if mrf is not None and pipeline is not None:
-            mrfMask = self._regs.get(17, 0xFF)
-            n_rows = mrf.shape[0]
-            mask_dim = max(1, n_rows // 8)
+        if mrf is not None and self._pipeline is not None:
+            # Apply ReadMatrixMask to zero out masked rows
+            mrfMask = self._regs.get(17, 0xFF)  # REG_READ_MATRIX_MASK, default all rows active
+            n = mrf.shape[0]
+            mask_dim = max(1, n // 8)  # rows per mask bit
             masked_mrf = mrf.copy()
             for bit_idx in range(8):
                 if not (mrfMask >> bit_idx) & 1:
-                    sr = bit_idx * mask_dim
-                    er = min(sr + mask_dim, n_rows)
-                    if sr < n_rows:
-                        masked_mrf[sr:er, :] = 0.0
+                    start_row = bit_idx * mask_dim
+                    end_row = min(start_row + mask_dim, n)
+                    if start_row < n:
+                        masked_mrf[start_row:end_row, :] = 0.0
+
             rows, cols = masked_mrf.shape
-            n = min(len(pipeline), cols)
+            n = min(len(self._pipeline), cols)
             result = np.zeros(rows, dtype=np.float32)
-            self._lib.mv_mul(self._ptr(masked_mrf), self._ptr(pipeline),
+            self._lib.mv_mul(self._ptr(masked_mrf), self._ptr(self._pipeline),
                              self._ptr(result), rows, n, 0)
-            return self._round_fp16(result)
-        return pipeline
+            self._pipeline = result
+            self._pipeline_round_fp16()
+            # No auto-store to IVRF — firmware explicitly V_WR ACC/MUL/IVRF after MV_MUL.
+            # Auto-storing would overwrite IVRF with Q, breaking multi-chain reads of input X.
 
-    def _vv_binop(self, impl_fn, a, b):
-        if a is not None and b is not None:
-            n = min(len(a), len(b))
+    def _vv_mul(self, opcode, opd0, opd1):
+        """Vector-vector elementwise multiply: _vpipe_a × pipeline → pipeline."""
+        if self._vpipe_a is not None and self._pipeline is not None:
+            n = min(len(self._vpipe_a), len(self._pipeline))
             r = np.zeros(n, dtype=np.float32)
-            impl_fn(a, b, r, n)
-            return self._round_fp16(r)
-        return b if b is not None else a
+            self._lib.vec_mul(self._ptr(self._vpipe_a), self._ptr(self._pipeline),
+                              self._ptr(r), n)
+            self._pipeline = r
+            self._pipeline_round_fp16()
+        self._vpipe_a = None
 
-    def _vv_mul_impl(self, a, b, r, n):
-        self._lib.vec_mul(self._ptr(a), self._ptr(b), self._ptr(r), n)
-
-    def _vv_add_sub_impl(self, opcode, a, b):
-        if a is not None and b is not None:
-            n = min(len(a), len(b))
+    def _vv_add_sub(self, opcode, opd0, opd1):
+        """Vector-vector binary operation: vpipe_a OP pipeline → pipeline.
+        
+        OP_VV_ADD:      vpipe_a + pipeline
+        OP_VV_A_SUB_B:  vpipe_a - pipeline
+        OP_VV_B_SUB_A:  pipeline - vpipe_a
+        OP_VV_MAX:      max(vpipe_a, pipeline)
+        OP_VV_MIN:      min(vpipe_a, pipeline)
+        """
+        if self._vpipe_a is not None and self._pipeline is not None:
+            n = min(len(self._vpipe_a), len(self._pipeline))
             r = np.zeros(n, dtype=np.float32)
             if opcode == OP_VV_ADD:
-                self._lib.vec_add(self._ptr(a), self._ptr(b), self._ptr(r), n)
+                self._lib.vec_add(self._ptr(self._vpipe_a), self._ptr(self._pipeline),
+                                  self._ptr(r), n)
             elif opcode == OP_VV_A_SUB_B:
-                self._lib.vec_sub(self._ptr(a), self._ptr(b), self._ptr(r), n)
+                self._lib.vec_sub(self._ptr(self._vpipe_a), self._ptr(self._pipeline),
+                                  self._ptr(r), n)
             elif opcode == OP_VV_B_SUB_A:
-                self._lib.vec_sub(self._ptr(b), self._ptr(a), self._ptr(r), n)
+                self._lib.vec_sub(self._ptr(self._pipeline), self._ptr(self._vpipe_a),
+                                  self._ptr(r), n)
             elif opcode == OP_VV_MAX:
-                self._lib.vec_max(self._ptr(a), self._ptr(b), self._ptr(r), n)
+                self._lib.vec_max(self._ptr(self._vpipe_a), self._ptr(self._pipeline),
+                                  self._ptr(r), n)
             else:
-                self._lib.vec_add(self._ptr(a), self._ptr(b), self._ptr(r), n)
-            return self._round_fp16(r)
-        return b if b is not None else a
+                # OP_VV_MIN: just use add and negate? Or implement.
+                # Fallback: add for unknown
+                self._lib.vec_add(self._ptr(self._vpipe_a), self._ptr(self._pipeline),
+                                  self._ptr(r), n)
+            self._pipeline = r
+            self._pipeline_round_fp16()
+        self._vpipe_a = None
 
-    def _v_activation(self, opcode, pipeline):
-        if pipeline is not None:
-            n = len(pipeline)
+    def _v_activation(self, opcode, opd0, opd1):
+        """Activation functions on pipeline."""
+        self._clear_vv()
+        if self._pipeline is not None:
+            n = len(self._pipeline)
             r = np.zeros(n, dtype=np.float32)
             if opcode == OP_V_GELU:
-                self._lib.gelu(self._ptr(pipeline), self._ptr(r), n)
+                self._lib.gelu(self._ptr(self._pipeline), self._ptr(r), n)
             elif opcode == OP_V_RELU:
-                self._lib.relu(self._ptr(pipeline), self._ptr(r), n)
+                self._lib.relu(self._ptr(self._pipeline), self._ptr(r), n)
             elif opcode == OP_V_SIGM:
-                self._lib.sigmoid(self._ptr(pipeline), self._ptr(r), n)
+                self._lib.sigmoid(self._ptr(self._pipeline), self._ptr(r), n)
             elif opcode == OP_V_TANH:
-                r[:] = np.tanh(pipeline)
+                r[:] = np.tanh(self._pipeline)
             elif opcode == OP_V_EXP:
-                r[:] = np.exp(pipeline)
-            result = self._round_fp16(r)
-            self._store_to_ivrf(result)
-            return result
-        return pipeline
+                r[:] = np.exp(self._pipeline)  # elementwise exp
+            self._pipeline = r
+            self._store_to_ivrf()
 
-    def _v_softmax(self, pipeline):
-        if pipeline is not None:
-            n = len(pipeline)
+    def _v_softmax(self, opcode, opd0, opd1):
+        """Softmax on pipeline."""
+        self._clear_vv()
+        if self._pipeline is not None:
+            n = len(self._pipeline)
             r = np.zeros(n, dtype=np.float32)
-            self._lib.softmax(self._ptr(pipeline), self._ptr(r), n)
-            result = self._round_fp16(r)
-            self._store_to_ivrf(result)
-            return result
-        return pipeline
+            self._lib.softmax(self._ptr(self._pipeline), self._ptr(r), n)
+            self._pipeline = r
+            self._store_to_ivrf()
 
-    def _v_layernorm(self, pipeline):
-        if pipeline is not None:
-            n = len(pipeline)
+    def _v_layernorm(self, opcode, opd0, opd1):
+        """Layer normalization on pipeline.
+
+        Uses IVRF (mem_id 5) as gamma and AddSubVrf_0 (mem_id 7) as beta,
+        matching the HDL dispatch in npu_top.py:
+            slu_gamma[i] = ivrf[i], slu_beta[i] = as0[i].
+        """
+        self._clear_vv()
+        if self._pipeline is not None:
+            n = len(self._pipeline)
             gamma = self._vrf.get(5, np.ones(n, dtype=np.float32))[:n]
-            beta = self._vrf.get(7, np.zeros(n, dtype=np.float32))[:n]
+            beta  = self._vrf.get(7, np.zeros(n, dtype=np.float32))[:n]
             r = np.zeros(n, dtype=np.float32)
-            self._lib.layernorm(self._ptr(pipeline), self._ptr(gamma),
+            self._lib.layernorm(self._ptr(self._pipeline), self._ptr(gamma),
                                 self._ptr(beta), self._ptr(r), n, 1e-12)
-            result = self._round_fp16(r)
-            self._store_to_ivrf(result)
-            return result
-        return pipeline
+            self._pipeline = r
+            self._store_to_ivrf()
 
     def _spu_func(self, opcode, opd0, opd1):
-        # scalar op — no VMM/MMM/MVU busy
-        src = opd1 & 0x3F
+        """SPU scalar functions (recip, sqrt, mul).
+        
+        opd0: SRF target index (where to store the result).
+        opd1: SRF source index (where to read the operand).
+        """
+        src = opd1 & 0x3F  # limit to SRF size (64)
         dst = opd0 & 0x3F
         val = self._spu_srf[src] if src < len(self._spu_srf) else 0.0
+        
         if opcode == OP_S_RECIP:
+            # reciprocal: dst = 1.0 / src
             result = 1.0 / val if val != 0.0 else float('inf')
         elif opcode == OP_S_SQRT:
+            # square root: dst = sqrt(src)
             result = math.sqrt(val) if val >= 0.0 else float('nan')
         elif opcode == OP_SS_MUL:
+            # scalar multiply: dst = dst * src 
             dst_val = self._spu_srf[dst] if dst < len(self._spu_srf) else 0.0
             result = dst_val * val
         else:
             result = 0.0
+        
         if dst < len(self._spu_srf):
             self._spu_srf[dst] = float(result)
 
+    # ── State snapshot for debug instrumentation ─────────────────
     def snapshot(self):
-        """Return NPU state (no pipeline — it's local to the chain)."""
+        """Return a dict capturing the full NPU state.
+
+        Used by operator-by-operator verification to compare
+        intermediates against golden reference without modifying
+        firmware.  All arrays are copies (safe to mutate).
+        """
         return {
+            'pipeline': self._pipeline.copy() if self._pipeline is not None else None,
+            'vpipe_a': self._vpipe_a.copy() if self._vpipe_a is not None else None,
             'dram_addr': self._dram_addr,
             'regs': dict(self._regs),
             'spu_srf': self._spu_srf.copy(),

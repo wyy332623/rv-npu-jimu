@@ -26,4 +26,13 @@ _start:
 3:
     j 3b
 
-# Trap handler is intentionally empty — emulation does not trigger traps.
+# Trap handler (simple: infinite loop)
+.section .text.trap
+.globl trap_handler
+trap_handler:
+    # Save context (minimal)
+    csrw mscratch, a0
+    # Check mcause
+    csrr a0, mcause
+    # For now, just loop
+    j trap_handler

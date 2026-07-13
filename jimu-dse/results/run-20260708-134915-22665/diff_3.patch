@@ -1,0 +1,174 @@
+83a84
+> #define VRF_CACHE_OFF    (2 * _SEQ_LEN * _NUM_TILES * NATIVE_DIM)  /* after K+V */
+191a193,252
+> static void mvm_tiled_vrf(uint32_t mat_dram_base, uint32_t vec_vrf_base,
+>                            uint32_t num_tiles, uint32_t bias_dram_base)
+> {
+>     uint32_t tr, tc;
+> 
+>     SEND_SI(OP_S_WR, REG_TILE_ROWS_ADDR, 1);
+>     SEND_SI(OP_S_WR, REG_TILE_COLS_ADDR, 1);
+>     SEND_SI(OP_S_WR, REG_ITERATIONS_ADDR, 1);
+> 
+>     SEND_SI(OP_V_RD, MEM_FILL, 0);
+>     SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);
+>     if (num_tiles > 1) {
+>         SEND_SI(OP_V_RD, MEM_FILL, 0);
+>         SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_2, 0);
+>     }
+> 
+>     for (tc = 0; tc < num_tiles; tc++) {
+>         SEND_SI(OP_V_RD, vec_vrf_base + tc * NATIVE_DIM, 0);
+>         SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
+>         SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
+>         SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
+> 
+>         for (tr = 0; tr < num_tiles; tr++) {
+>             uint32_t tile_dram_addr = mat_dram_base + (tr * num_tiles + tc) * MAT_SIZE;
+>             SEND_LO(OP_M_RD_DRAM, tile_dram_addr);
+>             SEND_SI(OP_M_WR, MEM_MATRIX_RF, 0);
+> 
+>             SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
+>             SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
+>             SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
+> 
+>             SEND_SI(OP_MV_MUL, 0, 0);
+> 
+>             uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_2;
+>             if (tc == 0) {
+>                 SEND_SI(OP_V_WR, acc_vrf, 0);
+>             } else {
+>                 SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);
+>                 SEND_SI(OP_V_RD, acc_vrf, 0);
+>                 SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+>                 SEND_SI(OP_VV_ADD, 0, 0);
+>                 SEND_SI(OP_V_WR, acc_vrf, 0);
+>             }
+>         }
+>     }
+> 
+>     for (tr = 0; tr < num_tiles; tr++) {
+>         uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_2;
+>         SEND_SI(OP_V_RD, acc_vrf, 0);
+>         SEND_LO(OP_V_RD_DRAM, bias_dram_base + tr * NATIVE_DIM);
+>         SEND_SI(OP_VV_ADD, 0, 0);
+>         SEND_SI(OP_V_WR, acc_vrf, 0);
+>     }
+> 
+>     if (num_tiles > 1) {
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_2, 0);
+>         SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
+>     }
+> }
+> 
+280,281c341,345
+<         save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
+<                         MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+---
+>         uint32_t cache_off = pos * num_tiles * NATIVE_DIM;
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
+>         SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off);
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
+>         SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off + NATIVE_DIM);
+298,299c362,367
+<         save_row_tiles(num_tiles, SAVE_V_BASE + pos * num_tiles * 8,
+<                         MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+---
+>         uint32_t v_base_off = seq_len * num_tiles * NATIVE_DIM;
+>         uint32_t cache_off = v_base_off + pos * num_tiles * NATIVE_DIM;
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
+>         SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off);
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
+>         SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off + NATIVE_DIM);
+326c394
+<     /* Compute Q for this position and save */
+---
+>     /* Compute Q for this position — kept in ADDSUB_VRF for direct consumption */
+328,336d395
+<     save_row_tiles(num_tiles, SAVE_Q_BASE + pos * num_tiles * 8,
+<                     MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+< 
+<     /* Zero the context accumulator per row-tile */
+<     for (tr = 0; tr < num_tiles; tr++) {
+<         uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
+<         SEND_SI(OP_V_RD, MEM_FILL, 0);
+<         SEND_SI(OP_V_WR, acc_vrf, 0);
+<     }
+346c405,406
+<                 SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
+---
+>                 uint32_t k_off = p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
+>                 SEND_SI(OP_V_RD, MEM_MFU_INITIAL_VRF, k_off);
+359c419
+<             SEND_LO(OP_V_RD_DRAM, SAVE_Q_BASE + pos * num_tiles * 8 + tr * 8);
+---
+>             SEND_SI(OP_V_RD, acc_vrf, 0);
+371a432,435
+>             /* Q consumed — zero accumulator VRF for context accumulation */
+>             SEND_SI(OP_V_RD, MEM_FILL, 0);
+>             SEND_SI(OP_V_WR, acc_vrf, 0);
+> 
+376c440,442
+<                 SEND_LO(OP_V_RD_DRAM, SAVE_V_BASE + p * num_tiles * 8 + tr * 8);
+---
+>                 uint32_t v_off = _SEQ_LEN * _NUM_TILES * NATIVE_DIM
+>                                + p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
+>                 SEND_SI(OP_V_RD, MEM_MFU_INITIAL_VRF, v_off);
+474,475c540
+<             /* Save attention context Z to DRAM scratch (contiguous,
+<              * not stride-8, so mvm_tiled_q loads tile columns correctly). */
+---
+>             /* Save attention context Z to VRF cache for self-output */
+480c545
+<                 SEND_LO(OP_V_WR_DRAM, SCRATCH_Z + tr * NATIVE_DIM);
+---
+>                 SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+484,487c549,551
+<             mvm_tiled_q(_PROJ_BASE + 3 * _STRIDE, SCRATCH_Z, num_tiles,
+<                         _PROJ_BASE + 3 * _STRIDE + _MAT_SIZE);
+<             /* Residual 1: SO + X.  Save SO to scratch first,
+<              * then load X and add. */
+---
+>             mvm_tiled_vrf(_PROJ_BASE + 3 * _STRIDE, VRF_CACHE_OFF, num_tiles,
+>                           _PROJ_BASE + 3 * _STRIDE + _MAT_SIZE);
+>             /* Residual 1: SO + X.  Cache SO in VRF, then load X and add. */
+491c555
+<                 SEND_LO(OP_V_WR_DRAM, SO_SCRATCH + tr * NATIVE_DIM);
+---
+>                 SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+500c564
+<             /* Residual 1: reload SO from SO_SCRATCH, add X from VRF */
+---
+>             /* Residual 1: reload SO from VRF cache, add X from VRF */
+503c567
+<                 SEND_LO(OP_V_RD_DRAM, SO_SCRATCH + tr * NATIVE_DIM);
+---
+>                 SEND_SI(OP_V_RD, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+509c573
+<             /* Save LN1 output to DRAM scratch for FFN Wi input (contiguous) */
+---
+>             /* Cache LN1 output in VRF for FFN inter */
+513c577
+<                 SEND_LO(OP_V_WR_DRAM, SCRATCH_LN1 + tr * NATIVE_DIM);
+---
+>                 SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+517,518c581,582
+<             mvm_tiled_q(_PROJ_BASE + 4 * _STRIDE, SCRATCH_LN1, num_tiles,
+<                         _PROJ_BASE + 4 * _STRIDE + _MAT_SIZE);
+---
+>             mvm_tiled_vrf(_PROJ_BASE + 4 * _STRIDE, VRF_CACHE_OFF, num_tiles,
+>                           _PROJ_BASE + 4 * _STRIDE + _MAT_SIZE);
+525c589
+<             /* Save GELU output to DRAM scratch for FFN Wo input (contiguous) */
+---
+>             /* Cache GELU output in VRF for FFN output */
+529c593
+<                 SEND_LO(OP_V_WR_DRAM, SCRATCH_GELU + tr * NATIVE_DIM);
+---
+>                 SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+533,534c597,598
+<             mvm_tiled_q(_PROJ_BASE + 5 * _STRIDE, SCRATCH_GELU, num_tiles,
+<                         _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE);
+---
+>             mvm_tiled_vrf(_PROJ_BASE + 5 * _STRIDE, VRF_CACHE_OFF, num_tiles,
+>                           _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE);

@@ -244,8 +244,7 @@ void adder_forward(void)
         SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
         SEND_SI(OP_MV_MUL, 0, 0);
         SEND_LO(OP_V_WR_DRAM, S_TEMP + 32);
-        npu_issue_chain();
-        npu_wait_chain();
+        npu_wait_done();
 
         // CPU: read dot via DRAM window (raw uint32, avoid soft-float)
         uint32_t dot_raw = npu_read_reg(NPU_DRAM_BASE + (S_TEMP + 32) * 4);
@@ -262,16 +261,13 @@ void adder_forward(void)
         SEND_LO(OP_V_RD_DRAM, S_MLP_OUT + i * MODEL_DIM);
         SEND_SI(OP_VV_ADD, 0, 0);
         SEND_LO(OP_V_WR_DRAM, S_AFTER_MLP + i * MODEL_DIM);
-        npu_issue_chain();
-        npu_wait_chain();
     }
 
     // ── Phase 8: last_h ──
     uint32_t last = S_AFTER_MLP + (sl - 1) * MODEL_DIM;
     SEND_LO(OP_V_RD_DRAM, last);
     SEND_LO(OP_V_WR_DRAM, FW_LAST_H);
-    npu_issue_chain();
-    npu_wait_chain();
+    npu_wait_done();
 }
 
 void main(void)

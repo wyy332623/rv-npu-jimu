@@ -1,191 +1,81 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
+# NPU 链式执行示例
 
-# NPU 链例
+本目录演示使用链式 dispatch API（`npu_issue_chain` + `npu_wait_chain`）编写单链和多链固件。
 
-显示使用单链和多链固件模式
-连锁-意识发送API(XQZPROT000XZ + XZPROT0001Z).
+## 背景
 
-## 背景情况
+**指令链**是一组连续的 NPU 指令，通过 `OP_INST_ISSUE`（opcode 45）原子提交。链内：
 
-一个**链**是一组连续的NPU指令被承诺
-解剖学上通过QQZPROT000XQZ(opcode 45). 一连串:
+- 指令写入 FIFO 时不进行逐指令停顿；
+- pipeline register 在指令之间传递数据；
+- `V_RD` 将向量加载到 pipeline，并把旧 pipeline 保存到 `vpipe_a`；
+- `V_WR` 和 `V_WR_DRAM` 会保存结果，同时保留 pipeline 值；
+- `INST_ISSUE` 清除 pipeline，值不会跨链保留。
 
-- 指令流入FIFO**不按指示摊位**
-  (ZPROT000Z不再投票)
-- 介于指令之间的线程值:
-  ZPROT000ZZ将一个矢量装入管道, 计算操作转换它,
-  ZPROT000Z 把它储存到ZPROT00001Z ** 将数值保留在
-  管**(广播语义).
-- ZPROT000Z/ZPROT0001Z**不**消耗管道——随后
-  指令仍然可以通过 QQZPROT000XXZ 读取(它保存了旧的)
-  输入ZPROT000Z的二进制操作
-- XZPROT000XZ 装入新值并保存上一条管道
-  ZPROT0001XQZ(ZPROT0001XQZ,ZPROT00002XQZ等的首个操作).
-- 津巴布韦 ** 丢弃管道**——数值没有持续
-  跨越链条边界。
+## 隐式和显式操作数
 
-## 隐性诉明确行为
+| 操作数 | 来源 | 使用者 |
+|--------|------|--------|
+| MRF（显式） | `M_RD_DRAM` 或 `M_RD` 加载 | 仅 `MV_MUL` |
+| pipeline（隐式） | 最近一次 `V_RD` 或 `V_RD_DRAM` | `MV_MUL`、`VV_*`、激活函数、`V_WR`、`V_WR_DRAM` |
+| `vpipe_a`（隐式） | `V_RD` 保存旧 pipeline | `VV_ADD`、`VV_MUL` 等二元操作 |
+| SRF（显式） | `OP_S_RECIP`、`OP_S_SQRT` 等写入 | `MEM_SPU_BROADCAST` |
 
-NPU指令以两种方式参考操作:
+`MV_MUL` 同时使用一个显式操作数 MRF 和一个隐式操作数 pipeline。指令字本身不编码这两个来源，链内的指令顺序保证它们处于正确状态。
 
-|作业|来源|用于|
-|---------|--------|--------|
-|** 管理成果框架**(明确)|由 QQZPROT000XZ 或 ZZPROT0001Z 装入(列缓冲)|仅限ZPROT000Z|
-|** 管道** (隐含)|由最近 的 ZPROT000XZ / ZPROT0001Z 设定|ZPROT0001Z,ZPROT00001Z,ZPROT00002Z 激活,ZPROT00003Z,ZPROT00004Z|
-|**vippe a**(隐形)|(旧管道)|ZPROT000Z,ZPROT0001Z等 (二进制行动)|
-|** 特别报告**(明确)|由 QQZPROT000XZ, QZPROT0001XZ 等编写 。|津巴布韦|
+## CHAIN_STATUS
 
-ZPROT000XXZ是独一无二的:它需要**一个明确的操作**(MRF, 由
-和**一个隐含的操作**(管道,由
-在ZPROT000Z/ZPROT00001Z之前。 指令词本身编码
-既非源——是链条中指令的 * 排序 *
-保证管理成果框架和管道保持正确的价值。
+| Bit | 单元 | 指令 |
+|-----|------|------|
+| 0 | VMM | `V_RD`、`V_WR`、DRAM 向量传输、`VV_*`、激活函数、`V_FUNC` |
+| 1 | MMM | `M_RD_DRAM`、`M_RD`、`M_WR_DRAM` |
+| 2 | MVU | `MV_MUL` |
 
-因此,QQZPROT000XXZ中的单链例可以避免
-不必要的 QQZPROT000Z 环行图 — 矢量生命
-从ZPROT00000Z直接进入ZPROT00001Z的管道中.
+pipeline 不是功能单元，而是所有指令共享的数据通路，不单独计 busy 状态。
 
-横跨链条:
+## 示例文件
 
-- `INST_ISSUE` 执行所有前述并行指令
-  (以RTL计) 通过清除模拟器模式
-  (原始内容存档于2019-09-02). ZPROT000XZ to 0.
-- (ZPROT0001Z 民调)
-  直到所有功能单元(VMM,MMM,MVU)闲置.
-- ** SMC**(同时期的多笼):独立的链条
-  (没有 QZPROT000XZ 危险) 可以在RTL 中同时运行 。
+### `01_single_chain.c`
 
-## CHAIN STATUS 位任务
+在一条链中完成一次 MVM：
 
-|位数|单位|说明|
-|-----|------|-------------|
-| 0 |自愿|ZPROT0001Z,ZPROT0001Z,ZPROT00002Z,ZPROT00003Z,ZPROT00004Z,ZPROT00005Z(活动),ZPROT00006Z.|
-| 1 |母亲|ZPROT000XZ,ZPROT00001Z (VecToMatRow → MRF),ZPROT00002XZ|
-| 2 |毛里求斯|津巴布韦|
-
-输油管登记册本身不是一个功能单位——它是一个数据
-所有指示都经过的路径。 永远不会独立
-"繁忙",因此在CHAIN STATUS中没有跟踪.
-
-## 文件引用
-
-### 津巴布韦
-
-一个链组中的单个MVM(矩阵-活度乘数):
-
-```
-M_RD_DRAM → M_WR → V_RD_DRAM → V_WR/IVRF → V_RD/IVRF → MV_MUL → V_WR/MPV
-├───────────────────── MMM ─────────────────────┤
-├───────── VMM (load) ─────────┤├── MVU ──┤├─ VMM (store) ─┤
-                                                      INST_ISSUE
-                                                      wait_chain
+```text
+M_RD_DRAM → M_WR → V_RD_DRAM → MV_MUL → V_WR
 ```
 
-然后第二连锁阅读VRF结果并写到DRAM.
+随后第二条链读取 VRF 结果并写入 DRAM。
 
-### 津巴布韦
+### `02_multi_chain.c`
 
-** 1** — MVM: ZPROT000Z
+- 链 1：MVM，`W × X → MULTIPLY_VRF`；
+- 链 2：bias 加法，`W×X + bias → DRAM`；
+- 还包含一个将 SiLU、MVM 和残差加法组合为单链的 FFN 示例。
 
-** 第2章**——比亚斯加上:ZPROT000XZ
+独立链在真实 RTL 中可以进行 SMC（Simultaneous Multi-Chaining）并发，但当前 Python 模拟器仍按顺序执行。
 
-并包含ZPROT000Z, 参考执行
-根据ZPROT000XZ的ZPROT00001Z,
-作为单链组(15个指令).
+### `03_softmax_chain.c`
 
-### 津巴布韦
+演示通过隐式 pipeline 将以下操作连接起来：
 
-证明通过ZPROT0001Z 与ZPROT00001Z 连在一起
-隐含管道。 软max 输出直接流入 QQZPROT000 QZ
-没有中间 DRAM 保存。
-
-** Chain 1 ** — Q × K.T → 分数 → 软max(MRF = K.T,管 = Q):
-```
-M_RD_DRAM(K.T) → M_WR → V_RD_DRAM(Q) → MV_MUL → V_FUNC(SOFTMAX) → V_WR
-├──── MMM ─────┤├─────────── VMM (load) ──────────┤├ MVU ─┤├ V_FUNC ┤├ VMM ┤
-                                                                  INST_ISSUE
-                                                                  wait_chain
+```text
+Q × K.T → score → Softmax → attention × V → context
 ```
 
-** Chain 2 ** — atn × V → 上下文(MRF = V, 管道 = atn from VRF):
-```
-M_RD_DRAM(V) → M_WR → V_RD(attn) → MV_MUL → V_WR
-├─── MMM ────┤├── VMM ──┤├ MVU ┤├ VMM ┤
-```
+Softmax 直接读取 `MV_MUL` 的 pipeline 输出，并将结果写回 pipeline，因此 score 和 Softmax 之间不需要 DRAM 保存-加载往返。
 
-** Chain 3 ** — 背景书写给 DRAM。
+## DAG 生成
 
-关键洞察力:ZPROT000XQZ读取管道(MV MUL的分数),
-应用软max,并将结果写回管道上——所以
-下一个指令 (V WR) 立即看到注意重。 没有
-DRAM在积分和软马克之间循环保存载荷.
-
-管理成果框架将**K.T**列入第1链,将**V**(不是V.T)列入第2链。
-由于MV MUL计算 MRF × 管道,链2计算 V× attn,
-上下文矢量 = 值行的加权和。
-
-### 津巴布韦
-
-生成用于DAG的显示伸缩流经链的图
-实例。 生产两个事件级的 DAG( 每个指令都作为节点)
-以及一个崩溃的微操作DAG(负载计算存储组).
-
-运行脚本重播单链和SiLU链指令
-通过模拟器的 QQZPROT000XZ 序列并写入 DOT 文件
-用 Graphviz 渲染:
+`chain_dag.py` 会生成事件级 DAG 和折叠后的微操作 DAG：
 
 ```bash
 PYTHONPATH=. python3 firmware/examples/chain_dag.py --output /tmp/chain_dag/
-# Render DOT to PNG:
 dot -Tpng /tmp/chain_dag/chain_example_events.dot -o chain_events.png
 dot -Tpng /tmp/chain_dag/chain_example_microops.dot -o chain_microops.png
-dot -Tpng /tmp/chain_dag/silu_chain_microops.dot -o silu_chain_microops.png
-dot -Tpng /tmp/chain_dag/silu_chain_events.dot -o silu_chain_events.png
-dot -Tpng /tmp/chain_dag/multi_chain_events.dot -o multi_chain_events.png
-dot -Tpng /tmp/chain_dag/multi_chain_microops.dot -o multi_chain_microops.png
-dot -Tpng /tmp/chain_dag/softmax_chain_events.dot -o softmax_chain_events.png
-dot -Tpng /tmp/chain_dag/softmax_chain_microops.dot -o softmax_chain_microops.png
 ```
 
-### 生成的 DAG 图表
-
-预发图见于 QQZPROT00000Z:
-
-|图表|点文件|说明|
-|---------|----------|-------------|
-|[单链事件] (ZPROT000XZ)|津巴布韦|事件级别 DAG QQZPROT000XZ – 每个指令作为节点,边缘显示数据流(MRF → MV MUL,管道 → MV MUL,管道 → V WR)|
-|(ZPROT000XXZ) (ZPROT000Z) (ZPROT000XZ) (ZPROT000Z) (ZPROT000Z) (ZPROT000Z) (ZPROT000Z) (ZPROT000Z) (ZPROT000Z) (ZPROT000Z) (ZPROT000Z) (ZPROT000Z) (ZPROTUTUZ) (ZPROTUTUTOZ) (ZPROTUTUZ) (ZPROTMZ) (ZPROTMZ)|津巴布韦|折叠的微op DAG – MAT LOAD → MV MUL → DRAM STORE 组|
-|[多链事件] (ZPROT000XZ)|津巴布韦|双链序列来自 QQZPROT000XZ – 链 1 (MVM) 之后是链 2 (bias add)|
-|(ZPROT000XXZ) (ZPROT000Z) (英语).|津巴布韦|跨越两个链的微op DAG – VRF[1][0] 数据依赖连接 INST ISSUE 边界|
-|[silu连锁事件] (ZPROT000XZ)|津巴布韦|SiLU 事件级 DAG 上 → W  down → 残余链 – 24 个带有全脱功能边缘的指令|
-|(ZPROT000XZ) (英语).|津巴布韦|同一链条的折叠微操作DAG——21个指令崩溃到9个微操作器|
-|! [软链事件] (ZPROT000XZ)|津巴布韦|事件级别 DAG QQZPROT000XZ – 链1:QQK.T → 分数 → 软马克斯 → attn. 链条2:atn × V 上下文. 链条3: DRAM写.|
-|(ZPROT000XXZ) (英语).|津巴布韦|Micro-op DAG——SOFTMAX是MV MUL(K.T×Q)和MV MUL(V×attn)之间的一个独立的节点. MRF持有K.T然后V.|
-
-事件级别 DAG 显示 MV MUL 带有两个进入的边缘—— 一个 QQZPROT000XZ
-(前面的"ZPROT000XZ"中的明确操作)和"ZPROT00001Z"中的1个.
-(前作"ZPROT000XZ"中的隐含操作). 每个边缘
-标签为资源名称,使数据流明确。
-
-示例输出( 活动级别) :
-```
-  3 M_RD_DRAM          defs=[(MRF,)]          uses=[(DRAM, 1024)]
-  4 M_WR               defs=[]                uses=[(MRF,)]
-  5 V_RD_DRAM          defs=[(pipe,), ...]     uses=[(DRAM, 8192)]
-  6 MV_MUL             defs=[(pipe,)]          uses=[(pipe,), (MRF,)]
-    <- [3 M_RD_DRAM] via MRF       ← explicit
-    <- [5 V_RD_DRAM] via pipe      ← implicit
-  7 V_WR               defs=[(VRF, 1, 0)]      uses=[(pipe,)]
-  8 INST_ISSUE
-  9 V_RD               defs=[(pipe,), ...]      uses=[(VRF, 1, 0)]
- 10 V_WR_DRAM          defs=[(DRAM, 8448)]     uses=[(pipe,)]
- 11 INST_ISSUE
-```
+事件级 DAG 会显示 `MV_MUL` 的两条输入边：一条通过 MRF 连接显式矩阵操作数，另一条通过 pipeline 连接隐式向量操作数。
 
 ## 构建
-
-这些例子使用与现有的Makefile基础设施相同的
-坚固的软件。 以 :
 
 ```bash
 cd firmware
@@ -194,11 +84,12 @@ make TARGET=examples/02_multi_chain BUILD_DIR=build_examples
 make TARGET=examples/03_softmax_chain BUILD_DIR=build_examples
 ```
 
-## 密钥 API
+## API
 
-|函数|目的|
-|----------|---------|
-|津巴布韦|按一个指令——没有FIFO摊位|
-|津巴布韦|发送 QZPROT000QZ 以执行当前链|
-|津巴布韦|在所有单位闲置之前,|
-|津巴布韦|遗产——用链式API代替|
+| 函数 | 用途 |
+|------|------|
+| `npu_send_inst(inst)` | 推入一条指令，不进行 FIFO 停顿 |
+| `npu_issue_chain()` | 发送 `OP_INST_ISSUE`，提交当前链 |
+| `npu_wait_chain()` | 轮询 `NPU_CHAIN_STATUS`，等待所有单元空闲 |
+| `npu_wait_done()` | 旧版接口，推荐使用链式 API |
+

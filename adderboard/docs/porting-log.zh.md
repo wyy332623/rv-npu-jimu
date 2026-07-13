@@ -1,126 +1,95 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
-
 # NPU 移植计划——已完成
 
-两个AdderBoard挑战模型都移植到 NPU 模拟器 + RISC - 五
-固件堆叠。 该文件记录了最后架构和
-每一个步骤完成。
+两个 AdderBoard 挑战模型都已移植到 NPU 模拟器 + RISC-V 固件栈。本文记录最终架构和各步骤的完成情况。
 
-## 现况:完成
+## 状态：完成 ✓
 
-|步骤|130p(手工制作)|140p(训练)|
-|---|---|---|
-|1. DRAM布局|津巴布韦|津巴布韦|
-|2. 黄金参考|津巴布韦|ZPROT000XZ( 纯数字 Quen3)|
-|3. NPU教学流|ZPROT000Z(9次测试)|ZPROT000Z(8次测试)|
-|4. RISC-V固件|ZPROT000Z(单相)|ZPROT000Z(两阶段)|
-|5. 基础设施服务部门一体化|ZPROT000Z(6次测试)|ZPROT000XQZ(5个测试)|
-|奖励: FP16 路径|❌(非FP16安全)|ZPROT000Z(4次测试)|
+| 步骤 | 130p（手工构造） | 140p（训练得到） |
+|------|------------------|------------------|
+| 1. DRAM 布局 | `npu_dram_layout.py` | `npu_dram_layout_140p.py` |
+| 2. Golden reference | `golden_130p.py` | `golden_140p.py`（纯 NumPy Qwen3） |
+| 3. NPU 指令流 | `test_phase1b_full.py`（9 项） | `test_140p_phase1.py`（8 项） |
+| 4. RISC-V 固件 | `adder_130p.c`（单阶段） | `adder_140p.c`（两阶段） |
+| 5. ISS 集成 | `test_phase2_iss.py`（6 项） | `test_140p_phase2.py`（5 项） |
+| 加分项：FP16 路径 | 不满足 FP16 安全要求 | `test_140p_fp16.py`（4 项） |
 
----
+## 130p 架构（仅 FP32）
 
-## 130p 建筑(仅限FP32)
+```text
+输入：22 个 token 的提示（a=0..9，LSB-first；b=0..9，LSB-first）
+输出：11 个自回归步骤（和，LSB-first）
 
-```
-Input: 22-token prompt (a=0..9 LSB-first, b=0..9 LSB-first)
-Output: 11 autoregressive steps (sum LSB-first)
+数据流（最后 6 个 LM logit 除外都在 NPU 上执行）：
+Embedding → PE → Q/K/V → Attention → c_proj → residual
+→ MLP c_fc + ReLU + bias → MLP 秩 1 c_proj → residual
+→ LM head（4 个 logit 使用 NPU，6 个使用 RISC-V）→ argmax
 
-Data flow (all on NPU except last 6 LM logits):
-  Embedding → PE → Q/K/V → Attention(tiled, 2h×hd2) → c_proj → residual
-  → MLP c_fc + ReLU + bias → MLP rank-1 c_proj → residual
-  → LM head (4 logits on NPU, 6 via RISC-V) → argmax
-
-Firmware: single-phase, MMIO window for data exchange
-Key ops: MV_MUL, VV_ADD, VV_MUL, V_RELU, VV_B_SUB_A, V_EXP, S_RECIP
+固件：单阶段，通过 MMIO 窗口交换数据
+关键操作：MV_MUL、VV_ADD、VV_MUL、V_RELU、VV_B_SUB_A、V_EXP、S_RECIP
 ```
 
-## 140p 建筑 (FP32 + FP16)
+## 140p 架构（FP32 + FP16）
 
-```
-Input: 24-token prompt (a=0..9 LSB-first + 2 separators + b=0..9 LSB-first)
-Output: 11 autoregressive steps (sum LSB-first)
+```text
+输入：24 个 token 的提示（a=0..9 + 2 个分隔符 + b=0..9）
+输出：11 个自回归步骤
 
-ISS pre-fill (Python):
-  Embedding → RMSNorm(norm1) → W_q, W_kv → QK norms → RoPE
+ISS 预填充（Python）：Embedding → RMSNorm(norm1) → W_q、W_kv → QK 归一化 → RoPE
+阶段 1 固件：Attention → O=Q^T → residual → 将 attn_res 写入 DRAM
+ISS 间隔：从 DRAM 读取 attn_res → RMSNorm(norm2) → W_gate、W_up → 写入 S_BASE2
+阶段 2 固件：SiLU → gate×up → W_down → residual → 写入 FW_LAST_H
+ISS 标量路径：读取 last_h → RMSNorm(norm_final) → LM head → argmax
 
-Phase 1 firmware (NPU):
-  Attention (tiled, 1h×hd4) → O=Q^T → residual → write attn_res to DRAM
-
-ISS gap (Python):
-  Read attn_res from DRAM → RMSNorm(norm2) → W_gate, W_up → write to S_BASE2
-
-Phase 2 firmware (NPU):
-  SiLU(gate) via V_SIGM+VV_MUL → gate×up via VV_MUL → W_down via MV_MUL
-  → residual + write last_h to FW_LAST_H
-
-ISS scalar (Python):
-  Read last_h → RMSNorm(norm_final) → LM head (embedding.T) → argmax
-
-Firmware: two-phase, phase flag at DRAM[0x1F00] (raw uint32)
-Key ops: MV_MUL, VV_ADD, VV_MUL, V_SIGM, VV_B_SUB_A, V_EXP, S_RECIP
+固件：两阶段，阶段标志位于 DRAM[0x1F00]，使用原始 uint32
+关键操作：MV_MUL、VV_ADD、VV_MUL、V_SIGM、VV_B_SUB_A、V_EXP、S_RECIP
 ```
 
----
+## 140p 的关键设计决策
 
-## 140p的关键设计决定
+### 1. 单独保存 W_q^T（DRAM 0xD00）
 
-### 1. W q^T 单独存储( DRAM 0xD00)
+`MV_MUL` 计算 `MRF @ pipeline`，而 golden reference 的 O 投影计算 `ctx @ W_q`。由于 W_q 不一定对称，`W_q @ ctx` 不等于 `ctx @ W_q`。单独保存 `W_q^T` 后，`W_q^T @ ctx = ctx @ W_q`。
 
-MV MUL 计算QQZPROT000XZ,但黄金参考计算
-O型投影机的ZPROT000XQZ. 由于W q不是对称的,
-(原始内容存档于2019-09-03). ZZPROT000 QZ. 在单独的 DRAM 地址上存储 QZPROT0001Z
-校正: XQZPROT000XQZ.
+### 2. 两阶段固件
 
-### 2. 双阶段固件
+ISS 在阶段 1 运行前不知道 attention residual，因此不能预先计算 norm2/gate/up。Python ISS 在两个阶段之间从 DRAM 读取 `attn_res`，计算 norm2/gate/up，写入 `S_BASE2`（0x3000），然后启动阶段 2。
 
-ISS无法在第一阶段运行前预先计算QQZPROT000XXZ,因为它
-不知所终 Python 国际空间站的缺口读作
-来自DRAM的ZPROT000XXZ,
-至 ZPROT000XQZ(0x3000),然后发射第2阶段.
+### 3. 阶段标志使用原始 uint32
 
-### 3. 阶段旗为 Raw uint32
+C 固件通过 `npu_read_reg()` 将 DRAM 字节解释为原始整数。写入 `1.0f` 得到的是位模式 `0x3F800000`，不是整数 1。阶段 1 必须写 `0x00000000`，阶段 2 必须写 `0x00000001`。
 
-C固件使用将 DRAM 字节解释为 QZPROT000XQZ
-原始整数。 写入QQZPROT000XXZ(位图型为0x3F800000) QQ 1 in C.
-必须写入原始的 uint32 位图案: 0x000000000 用于第一阶段 。
-0x00000001 用于第2阶段.
+### 4. SiLU = V_SIGM + VV_MUL
 
-### 4. 西卢 = V SIGM + VV MUL
+无需新增硬件，两个已有 NPU 操作即可计算 `sigmoid(x) × x`。NpuFP32 测试已验证结果与 NumPy SiLU 精确匹配。
 
-不需要新的硬件。 两个现有的NPU操作计算QQZPROT000XZ.
-通过NpuFP32测试(精确匹配于numpy silu)验证无误.
+### 5. 查询之间重置 SRF
 
-### 5. 查询之间的 SRF 初始化
+`SPU_ADD_REDUCE` 和 `SPU_MAX_REDUCE` 是累加操作，值会跨查询保留：
 
-SPU ADD REDUCE 和 SPU MA REDCE 是累积的—— 数值持续
-交叉查询。 修补 :
-- SRF[0](最大值):用 SPU ADD REDUCE(-inf) 部队重置到-inf
-- 战略成果框架[1](和数):0通过XZPROT000XZ
+- SRF[0]（最大值）：用 `SPU_ADD_REDUCE(-inf)` 重置；
+- SRF[1]（总和）：通过 `npu_write_reg(NPU_SRF_BASE + 4, 0)` 清零。
 
----
+## 模拟器和固件改动
 
-## 模拟器更改
+| 改动 | 文件 | 原因 |
+|------|------|------|
+| 添加 `OP_V_SIGM` 处理器 | `emulator/npu_device_mini.py` | 原先会被静默忽略 |
+| 添加 `OP_V_TANH` 处理器 | `emulator/npu_device_mini.py` | 完整性 |
+| 在 ctypes 初始化中加入 `sigmoid` | `emulator/npu_device_mini.py` | V_SIGM 需要调用 |
+| 通过 MMIO 重置 SRF | `adderboard/firmware/adder_140p.c` | SPU 归约会累加 |
+| 添加 `NpuFP32` 类 | `emulator/npu_fp32.py` | FP32 验证模式 |
 
-|变动|文件|原因|
-|---|---|---|
-|添加了 QZPROT000 QZ 处理器|津巴布韦|被无声忽略了|
-|添加了 QZPROT000 QZ 处理器|津巴布韦|完整性|
-|类型设置中的 ZPROT000XZ|津巴布韦|V SIGM需要这个|
-|通过MMIO重置战略成果框架|津巴布韦|累积SPU 减少|
-|NpuFP32级|津巴布韦|FP32 核查模式|
+## 开发期间修复的错误
 
----
+| 错误 | 表现 | 修复 |
+|------|------|------|
+| VV_A_SUB_B / VV_B_SUB_A 总是执行加法 | `scores - max` 变成 `scores + max` | 修复 `_vv_add_sub()` |
+| V_EXP 为空操作 | `exp()` 返回 0 | 将 V_EXP 加入 `_v_activation()` |
+| SPU 归约覆盖而非累加 | 只保留最后一个 tile 的最大值/总和 | 改为累加 |
+| S_RECIP、S_SQRT 是空实现 | `inv_sum` 始终为 0 | 实现 `_spu_func()` |
+| V_SIGM 未实现 | SiLU 结果错误 | 添加 V_SIGM 处理器 |
+| 140p 查询间未重置 SRF[0] | CTX[1] 使用错误最大值 | 用 `SPU_ADD_REDUCE(-inf)` 重置 |
+| 140p 查询间未清零 SRF[1] | Softmax 总和错误 | 查询间增加 MMIO 清零 |
+| 阶段标志写为 float32 | C 的 `!= 1` 判断失败 | 写入原始 uint32 位模式 |
+| ISS MMIO 窗口过小 | SRF 窗口与 DRAM 重叠 | 扩展到 0x10000 |
 
-## 开发过程中修复错误
-
-|错误|示意图|修补|
-|---|---|---|
-|VV A SUB B/VV B SUB A总是添加|ZPROT000Z 计算 ZPROT00001Z|固定的 ZPROT000Z|
-|V EXP 无效|ZPROT000Z 返回 0|将 V EXP 添加到 ZPROT000 Z|
-|SPU 减少过度写作而不是积累|只有最后一块牌子的ZPROT000Z|累计制造 ZPROT000Z|
-|S RECIP, S SQRT 是根根|ZPROT000Z 总是0|已执行|
-|V SIGM 未执行|SILU计算错误|添加了 V  SIGM 处理器|
-|SRF[0] 不在查询之间重置(140p)|CTX[1] 使用错误的最大值(3.357 vs 3.263)|使用 SPU ADD REDUCE(-inf) 代替 SPU MA  REDUCE(-inf)|
-|SRF[1] 查询之间没有零(140p)|不正确的软马克总和(2.196对1.196)|在查询间添加 MMIO 0|
-|相位旗为浮点32 (140p)|C 比较 QZPROT000 Z 失败|写入原始的 uint32 位图案|
-|国际空间站MMIO窗口太小|SRF 窗口重叠 DRAM|延伸至 0x1000|

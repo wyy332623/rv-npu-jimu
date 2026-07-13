@@ -1,50 +1,46 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
+# NPU 上的 AdderBoard 模型
 
-# NPU 上的添加程序模型
-
-自足附加板项目:模型定义、培训、黄金
-参考文献、 DRAM 版式、 RISC- V 固件以及 NPU 模拟器的测试
-堆栈。
+一个自包含的 AdderBoard 项目，包含模型定义、训练、golden reference、DRAM 布局、RISC-V 固件以及 NPU 模拟器栈的测试。
 
 ## 模型
 
-|型号|参数|建筑|NPU 路径|
-|---|---|---|---|
-|页:1| 130 |1L GPT, d=4, 2h, ReLU, 罪PE|FP32 电话|
-|缩写  140p| 140 |1L Qune3, d=4, 1h, SwiGLU, RMSNorm, RoPE|FP32 + FP16|
+| 模型 | 参数量 | 架构 | NPU 路径 |
+|------|--------|------|----------|
+| cosminscn_130p | 130 | 1 层 GPT，d=4、2 个 head、ReLU、正弦位置编码 | FP32 |
+| dimopep_140p | 140 | 1 层 Qwen3，d=4、1 个 head、SwiGLU、RMSNorm、RoPE | FP32 + FP16 |
 
 ## 目录结构
 
-```
+```text
 adderboard/
-├── docs/                # Project documentation
-│   ├── compatibility.md #   Which models work, architecture, constraints
-│   ├── porting-log.md   #   Step-by-step porting record, design decisions, bugs
-│   └── how-to-run.md    #   Test commands for all 3 configurations
-├── models/              # Trained weights
-│   └── 140p/            #   dimopep_140p trained weights
-├── golden/              # Golden reference implementations (pure numpy)
-├── layout/              # DRAM weight layouts
-├── firmware/            # RISC-V firmware for both models
-├── tests/               # Test files
-│   ├── test_130p_phase1.py   # 130p FP32 — Python-driven NPU instructions
-│   ├── test_130p_phase2.py   # 130p FP32 — ISS + firmware
-│   ├── test_130p_cross.py    # 130p cross-check (Phase 1 vs Phase 2)
-│   ├── test_140p_phase1.py   # 140p FP32 — Python-driven NPU instructions
-│   ├── test_140p_phase2.py   # 140p FP32 — ISS + two-phase firmware
-│   └── test_140p_fp16.py     # 140p FP16 — FP16 emulator datapath
-└── training/            # Training scripts + sweep logs
+├── docs/                # 项目文档
+│   ├── compatibility.md #   可运行模型、架构和约束
+│   ├── porting-log.md   #   分步移植记录、设计决策和错误
+│   └── how-to-run.md    #   三种配置的测试命令
+├── models/              # 训练权重
+│   └── 140p/            #   dimopep_140p 训练权重
+├── golden/              # 纯 NumPy golden reference 实现
+├── layout/              # DRAM 权重布局
+├── firmware/            # 两个模型的 RISC-V 固件
+├── tests/               # 测试文件
+│   ├── test_130p_phase1.py   # 130p FP32：Python 驱动的 NPU 指令
+│   ├── test_130p_phase2.py   # 130p FP32：ISS + 固件
+│   ├── test_130p_cross.py     # 130p 交叉校验（阶段 1 与阶段 2）
+│   ├── test_140p_phase1.py    # 140p FP32：Python 驱动的 NPU 指令
+│   ├── test_140p_phase2.py    # 140p FP32：ISS + 两阶段固件
+│   └── test_140p_fp16.py      # 140p FP16：FP16 模拟器数据通路
+└── training/            # 训练脚本和 sweep 日志
 ```
 
-## 快速启动
+## 快速开始
 
 ```bash
-# Build firmware
+# 构建固件
 make -C firmware TARGET=adder NATIVE_DIM=4 SEQ_LEN=24
 make -C firmware TARGET=adder_140p BUILD_DIR=build_dim4 NATIVE_DIM=4 SEQ_LEN=24
 
-# Run all tests (~10 min)
+# 运行全部测试（约 10 分钟）
 python3 -m pytest adderboard/tests/ -v
 ```
 
-请参看 QQZPROT000XQZ 详细的每个型号的测试命令.
+各模型的详细测试命令见 `docs/how-to-run.md`。

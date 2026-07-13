@@ -1,71 +1,56 @@
-> 本文件由自动翻译生成，仅供参考；以英文原文为准。
-
 ---
-名称: dag- 分析
-说明: 读取 DAG 输出以识别 VRF 缓存的 DRAM 保存负载对
-许可证:麻省理工学院
+name: dag-analyze
+description: 读取 DAG 输出，识别用于 VRF 缓存的 DRAM 保存-加载对
+license: MIT
 ---
 
 # DAG 分析技能
 
 ## 输入
 
-管道在 QQZPROT000 QZ 生成这些文件:
+流程会在 `_out/` 生成：
 
-|文件|内容|
-|------|---------|
-|津巴布韦|所有微型操作都带有ZPROT000Z和边缘|
-|津巴布韦|带有 FLOP 、 字节、 AI 的 DRAM 流组|
+| 文件 | 内容 |
+|------|------|
+| `micro_op_dag.txt` | 所有微操作、定义/使用关系和数据依赖边 |
+| `dram_clusters.txt` | 包含 FLOPs、字节数和算术强度（AI）的 DRAM 流量簇 |
 
-## 如何阅读 DAG
+## 识别保存-加载对
 
-### 识别保存损失的对等
+保存-加载对是指一个 `DRAM_STORE` 后面紧跟着从**相同 DRAM 地址**读取的 `DRAM_LOAD`，且期间没有对该地址的写操作。
 
-保存的一对是QQZPROT000XXZ,然后是QZPROT0001Z,其地址为**same DRAM**,没有给该地址写插件。
-
-在ZPROT000Z区:
-```
- 33 DRAM_STORE       DRAM_STORE           [71-72]      uses=VRF[7][0] defs=DRAM[0x300]
-    <- [30 VV_ADD] via VRF[7][0]
-    <- [32 VREG_MOVE] via ('pipe',)
- 34 DRAM_STORE       DRAM_STORE           [73-74]      uses=VRF[8][0] defs=DRAM[0x308]
-...
-150 DRAM_LOAD        DRAM_LOAD            [340-341]    uses=DRAM[0x300] defs=VRF[18][0]
+```text
+33 DRAM_STORE  uses=VRF[7][0] defs=DRAM[0x300]
+150 DRAM_LOAD   uses=DRAM[0x300] defs=VRF[18][0]
     <- [33 DRAM_STORE] via DRAM[0x300]
 ```
 
-150号节点的边缘QQZPROT000XQZ显示,150号节点读了33号节点所写的. 这是一个**DRAM保存的负载配对**——数据到DRAM就马上回来.
+该边表示节点 150 读取了节点 33 写入的内容，即数据先写入 DRAM，随后又被读回。
 
-### 确定要修改的函数
+## 定位修改位置
 
-1. 查找 DRAM STORE — 请检查事件索引 (XZPROT000 XZ) 并找到相应的固件代码
-2. 查找 DRAM LOAD — 检查事件索引并找到相应的固件代码
-3. 两人都在ZPROT000Z区
-4. DRAM地址告诉你哪一个是:0x200=Q,0x300=K,0x400=V
+1. 根据 `DRAM_STORE` 的事件索引定位固件代码；
+2. 根据 `DRAM_LOAD` 的事件索引定位对应的读取代码；
+3. 两者通常位于 `firmware/bert/bert_layer.c`；
+4. 地址可帮助识别 tensor：`0x200=Q`、`0x300=K`、`0x400=V`。
 
-### 解释集群视图
+## 解读流量簇
 
-在ZPROT000Z区:
-```
-  LoadB  StoreB  FLOPs   AI
-   40       8      48    1.0  K Proj: loads WEIGHT+X, saves K
-   32       8      60    1.5  Attn Score: loads K+Q+V, saves prob
-```
+- `LoadB`：DRAM → NPU 的流量；
+- `StoreB`：NPU → DRAM 的流量；
+- `FLOPs`：执行的浮点运算量；
+- `AI = FLOPs / (LoadB + StoreB)`：算术强度，越高越好。
 
-- ZPROT000Z是DRAM ~ NPU流量
-- ZPROT000Z是NPU ~ DRAM流量
-- ZPROT000Z 正在计算
-- ZPROT00000Z ——较高更好。
+AI 低于 1.0 的簇受内存带宽限制，是优先优化目标。
 
-低AI集群( < 1.0)具有内存约束性,是首要的优化目标.
+## 输出
 
-## 产出
+输出符合条件的保存-加载对，例如：
 
-编制合格保存对的列表:
-```
+```text
 Save-load pairs:
   DRAM_STORE[0x300] at node 33 → DRAM_LOAD[0x300] at node 150 (K[0])
   DRAM_STORE[0x308] at node 34 → DRAM_LOAD[0x308] at node 177 (K[0] tr1)
   DRAM_STORE[0x400] at node 89 → DRAM_LOAD[0x400] at node 161 (V[0])
-  ...
 ```
+

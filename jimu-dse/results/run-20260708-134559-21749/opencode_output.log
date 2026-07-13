@@ -1,0 +1,100 @@
+[0m
+> build · big-pickle
+[0m
+[0m→ [0mSkill "vrf-cache"
+[0m✱ [0mGrep "MEM_"[90m in firmware · 17 matches[0m
+[0m✱ [0mGrep "NATIVE_DIM|_SEQ_LEN"[90m in firmware · 3 matches[0m
+[0m✱ [0mGrep "_SEQ_LEN"[90m in . · 100 matches[0m
+[0m✱ [0mGrep "SEQ_LEN|_SEQ_LEN"[90m in firmware · 9 matches[0m
+[0m→ [0mRead jimu-dse/results/run-20260708-111050-14165/candidate_1.c[90m [offset=270, limit=130][0m
+[0m→ [0mRead jimu-dse/results/run-20260708-111050-14165/candidate_1.c[90m [offset=1, limit=100][0m
+[0m→ [0mRead jimu-dse/results/run-20260708-111050-14165/candidate_1.c[90m [offset=265, limit=15][0m
+[0m→ [0mRead jimu-dse/results/run-20260708-111050-14165/candidate_3.c[90m [offset=270, limit=145][0m
+[0m✱ [0mGrep "MEM_MFU_INITIAL_VRF"[90m in jimu-dse/results/run-20260708-111050-14165 · 13 matches[0m
+[0m✱ [0mGrep "MEM_MFU_INITIAL_VRF"[90m in jimu-dse/results/run-20260708-111349-15549 · 0 matches[0m
+[0m✱ [0mGrep "MEM_MFU_INITIAL_VRF"[90m in jimu-dse/results/run-20260708-134559-21749 · 2 matches[0m
+[0m→ [0mRead jimu-dse/results/run-20260708-111050-14165/candidate_best.c[90m [offset=270, limit=150][0m
+[0m
+[0m# [0mTodos
+[•] Cache K in MFU_INITIAL_VRF instead of DRAM in compute_k_all_positions
+[ ] Cache V in MFU_INITIAL_VRF instead of DRAM in compute_v_all_positions
+[ ] Read K from VRF cache in K.T build in dot_product_attention
+[ ] Read V from VRF cache in V.T build in dot_product_attention
+[ ] Run test to verify correctness
+[0m
+Now I have a clear picture of the transformation. Let me read the exact sections I need to modify in the firmware file.
+[0m✗ [0mEdit firmware/bert/bert_layer.c failed
+[91m[1mError: [0mCould not find oldString in the file. It must match exactly, including whitespace, indentation, and line endings.
+Making the first edit: replace K save to DRAM with VRF cache write in `compute_k_all_positions`.
+[0m→ [0mRead firmware/bert/bert_layer.c[90m [offset=276, limit=30][0m
+[0m→ [0mRead firmware/bert/bert_layer.c[90m [offset=260, limit=60][0m
+[0m✱ [0mGrep "cache_base"[90m in firmware/bert/bert_layer.c · 4 matches[0m
+[0m✱ [0mGrep "compute_k_all_positions|compute_v_all_positions"[90m in firmware/bert/bert_layer.c · 6 matches[0m
+[0m→ [0mRead firmware/bert/bert_layer.c[90m [offset=465, limit=15][0m
+[0m→ [0mRead firmware/bert/bert_layer.c[90m [offset=320, limit=120][0m
+[0m→ [0mRead firmware/bert/bert_layer.c[90m [offset=478, limit=20][0m
+[0m
+[0m# [0mTodos
+[✓] Cache K in MFU_INITIAL_VRF instead of DRAM in compute_k_all_positions
+[✓] Cache V in MFU_INITIAL_VRF instead of DRAM in compute_v_all_positions
+[✓] Read K from VRF cache in K.T build in dot_product_attention
+[✓] Read V from VRF cache in V.T build in dot_product_attention
+[•] Run test to verify correctness
+[0m
+The VRF cache transformation is already fully implemented in the file. Let me verify with the test.
+[0m$ [0mcd /home/lirank/rv-npu-jimu/rv-npu-jimu.v10 && python3 -m pytest tests/integration/test_bert_e2e.py -k "dim2 and h4" -s --no-header 2>&1 | grep max_diff
+Round 1 out: max_diff=0.000000, mean_diff=0.000000
+  Round 1 out: max_diff=0.000000, mean_diff=0.000000
+[0m
+[0m$ [0mcd /home/lirank/rv-npu-jimu/rv-npu-jimu.v10 && python3 -m pytest tests/integration/test_bert_e2e.py -k "seq6" -s --no-header 2>&1 | grep "DRAM"
+DRAM traffic (float32 elements):
+    V_RD_DRAM: 312 ops × 8 el = 624 el
+    V_WR_DRAM: 132 ops × 8 el = 264 el
+    M_RD_DRAM: 144 ops × 64 el = 576 el
+    M_WR_DRAM: 0 ops × 64 el = 0 el
+  Opcodes hit: ['MV_MUL', 'M_RD_DRAM', 'M_WR', 'S_WR', 'VV_ADD', 'V_FUNC', 'V_GELU', 'V_RD', 'V_RD_DRAM', 'V_WR', 'V_WR_DRAM']
+  DRAM traffic (float32 elements):
+    V_RD_DRAM: 336 ops × 8 el = 1344 el
+    V_WR_DRAM: 132 ops × 8 el = 528 el
+    M_RD_DRAM: 144 ops × 64 el = 2304 el
+    M_WR_DRAM: 0 ops × 64 el = 0 el
+  Opcodes hit: ['MV_MUL', 'M_RD_DRAM', 'M_WR', 'S_WR', 'VV_ADD', 'V_FUNC', 'V_GELU', 'V_RD', 'V_RD_DRAM', 'V_WR', 'V_WR_DRAM']
+  DRAM traffic (float32 elements):
+    V_RD_DRAM: 186 ops × 8 el = 744 el
+    V_WR_DRAM: 78 ops × 8 el = 312 el
+    M_RD_DRAM: 36 ops × 64 el = 576 el
+    M_WR_DRAM: 0 ops × 64 el = 0 el
+  Opcodes hit: ['MV_MUL', 'M_RD_DRAM', 'M_WR', 'S_WR', 'VV_ADD', 'V_FUNC', 'V_GELU', 'V_RD', 'V_RD_DRAM', 'V_WR', 'V_WR_DRAM']
+[0m
+[0m$ [0mcd /home/lirank/rv-npu-jimu/rv-npu-jimu.v10 && python3 -m pytest tests/integration/test_bert_e2e.py -k "dim2 and h4" -s --no-header 2>&1 | tail -30
+.
+  Config: dim=2, lanes=2, num_head=2, hidden_size=4, head_size=2, seq_len=6
+  num_tiles = 2 (each tile = 2×2)
+  Mode: 2×2-tile (hidden_size > dim)
+
+  Round 0: FP16 golden reference...
+  Golden out[:4]:   [ 0.7964 -0.9038  0.8643 -1.002 ]
+
+  Round 1: Firmware on emulator (multi-tile, dim=8)...
+  Input X (pos 0)[:4]: [ 0.7251 -0.2019  0.9458  2.2227]
+  Instructions executed: 3623
+  Emulator out[:4]:  [ 0.7964 -0.9038  0.8643 -1.002 ]
+  Round 1 out: max_diff=0.000000, mean_diff=0.000000
+
+  DRAM traffic (float32 elements):
+    V_RD_DRAM: 312 ops × 8 el = 624 el
+    V_WR_DRAM: 132 ops × 8 el = 264 el
+    M_RD_DRAM: 144 ops × 64 el = 576 el
+    M_WR_DRAM: 0 ops × 64 el = 0 el
+    Total: 1464 elements (5856 bytes)
+  ✅ Multi-tile opcode coverage complete
+  Total instructions: 3623
+  Opcodes hit: ['MV_MUL', 'M_RD_DRAM', 'M_WR', 'S_WR', 'VV_ADD', 'V_FUNC', 'V_GELU', 'V_RD', 'V_RD_DRAM', 'V_WR', 'V_WR_DRAM']
+  Round 2: skipped (install amaranth for HDL validation)
+  Round 3: skipped (install amaranth for HDL validation)
+  
+  ✅ All rounds complete - output matches golden (firmware tile-MHA)
+.
+
+======================= 2 passed, 4 deselected in 1.68s ========================
+[0m

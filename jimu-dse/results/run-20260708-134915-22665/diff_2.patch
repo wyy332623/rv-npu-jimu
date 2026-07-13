@@ -1,0 +1,30 @@
+280,281c280,284
+<         save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
+<                         MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+---
+>         uint32_t cache_off = pos * num_tiles * NATIVE_DIM;
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
+>         SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off);
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
+>         SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off + NATIVE_DIM);
+298,299c301,306
+<         save_row_tiles(num_tiles, SAVE_V_BASE + pos * num_tiles * 8,
+<                         MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+---
+>         uint32_t v_base_off = seq_len * num_tiles * NATIVE_DIM;
+>         uint32_t cache_off = v_base_off + pos * num_tiles * NATIVE_DIM;
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
+>         SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off);
+>         SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
+>         SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off + NATIVE_DIM);
+346c353,354
+<                 SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
+---
+>                 uint32_t k_off = p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
+>                 SEND_SI(OP_V_RD, MEM_MFU_INITIAL_VRF, k_off);
+376c384,386
+<                 SEND_LO(OP_V_RD_DRAM, SAVE_V_BASE + p * num_tiles * 8 + tr * 8);
+---
+>                 uint32_t v_off = _SEQ_LEN * _NUM_TILES * NATIVE_DIM
+>                                + p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
+>                 SEND_SI(OP_V_RD, MEM_MFU_INITIAL_VRF, v_off);

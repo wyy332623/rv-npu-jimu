@@ -233,72 +233,18 @@ no parallel dispatch. Instructions are processed one at a time.
 
 Firmware polls `STATUS` until `DONE` before writing the next instruction.
 
-### 3.3 Inter-Chain Overlap and Intra-Chain Tensor Pipelining
+### 3.3 Pipelining and Chains
 
-The chain model enables two distinct forms of parallelism, both of which
-are aspirational (not implemented in the Python emulator):
+In the current Python emulator, the three micro-operations of a chain
+execute sequentially — the load completes before compute starts. In a
+future hardware implementation, these operations could target independent
+functional units (TMM, MVU, TMM) and execute in parallel, forming a
+truly pipelined VLIW command chain.
 
-#### Inter-Chain Overlap (SMC — Simultaneous Multi-Chaining)
-
-Independent chains that have no RAW/WAR/WAW hazards can run concurrently.
-Each chain targets a different functional unit (TMM, MVU/MFU/SLU, TMM),
-and the `CHAIN_STATUS` register (0x0C) tracks per-unit busy state.
-
-Example: while chain 1 computes `MV_MUL` (MVU busy), chain 2 can load
-the next tile into MRF (TMM busy):
-
-```
-Time ────────────────────────────────────────────────────>
-     ┌─────────────────────────────────────┐
-C1   │ M_RD_DRAM(K.T) │ MV_MUL  │ V_WR    │  ← chain 1: Q × K.T
-     └───────┬─────────┴─────────┴─────────┘
-             │ overlap: TMM loads next tile
-             │ while MVU computes
-     ┌───────┴──────────────────────────────┐
-C2   │ M_RD_DRAM(V) │ MV_MUL  │ V_WR      │  ← chain 2: attn × V
-     └──────────────┴─────────┴────────────┘
-```
-
-#### Intra-Chain Tensor Pipelining
-
-Within a single chain, the pipeline register threads values between
-instructions without explicit source/dest fields.  This enables a
-pipelined dataflow where the output of one micro-op is consumed by
-the next in the same cycle (in hardware), avoiding intermediate
-VRF lookups:
-
-```
-Cycle:    1           2           3           4           5
-         V_RD_DRAM → MV_MUL → V_FUNC(SOFTMAX) → MV_MUL → V_WR
-         (TMM load)  (MVU)     (SLU)            (MVU)    (TMM store)
-         │           │         │                │        │
-pipe:    Q           scores    attn             context  context
-```
-
-Each stage reads the pipeline value written by the previous stage,
-forming a **tensor pipeline** where a vector flows through multiple
-compute units without leaving the datapath.  In a hardware
-implementation, the pipeline register is a single vector-length
-register (NATIVE_DIM × FP16) that all units can read/write in the
-same cycle.
-
-#### Hazards
-
-| Hazard | Condition | Detection |
-|--------|-----------|-----------|
-| RAW | Load to MRF → MV_MUL in same chain | Ordering: MRF set by M_RD_DRAM, consumed by MV_MUL |
-| RAW | V_RD_DRAM → MV_MUL in same chain | Ordering: pipe set by V_RD_DRAM, consumed by MV_MUL |
-| WAR | Two chains writing same VRF | Chain scheduler: check VRF target before issue |
-| WAW | Two chains writing same VRF | Chain scheduler: check VRF target before issue |
-
-#### Relation to Existing Examples
-
-The chain examples in `firmware/examples/` demonstrate these concepts:
-- `01_single_chain.c`: Basic load-compute-store in one chain
-- `02_multi_chain.c`: Two independent chains (MVM + bias add) — candidates
-  for inter-chain overlap
-- `03_softmax_chain.c`: Q×K.T → softmax → attn×V pipeline through MVU→SLU→MVU
-  — the canonical example of intra-chain tensor pipelining
+The `INST_ISSUE` instruction serves as a chain delimiter for future
+parallel dispatch. In the Python emulator it is accepted but has no
+timing effect — it toggles the chain ID register which is not used for
+scheduling.
 
 ---
 

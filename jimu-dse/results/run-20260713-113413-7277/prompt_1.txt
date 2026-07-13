@@ -1,0 +1,80 @@
+You are optimizing NPU firmware at firmware/bert/bert_layer.c.
+
+Goal: compute-optimization (dim=4, hidden=4, num_head=2)
+Current header: /* NPU — BERT Encoder Layer Firmware (All Features)
+Primary metric: test_pass
+MV_MUL count: 84
+M_RD_DRAM ops (weight tile loads): 36
+Current DRAM: seq=2=1824B, seq=6=5472B (ratio 3.0x)
+
+=== DRAM Cluster Analysis (seq=6) ===
+  [ 0] FFN Out+Res Add2 t1 p0         Load=648B Store= 16B FLOPs=720 AI=1.1
+  [ 1] Save X→RES p0                  Load= 72B Store=  8B FLOPs=136 AI=1.7
+  [ 2] LN scratch p0                  Load=  0B Store=  8B FLOPs=  8 AI=1.0
+  [ 3] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [ 4] Residual Add2 p0               Load= 96B Store=  8B FLOPs= 96 AI=0.9
+  [ 5] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [ 6] LayerNorm 2 → Out p0           Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [ 7] FFN Out+Res Add2 t1 p0         Load= 72B Store= 16B FLOPs=240 AI=2.7
+  [ 8] Save X→RES p0                  Load= 72B Store=  8B FLOPs=136 AI=1.7
+  [ 9] LN scratch p0                  Load=  0B Store=  8B FLOPs=  8 AI=1.0
+  [10] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [11] Residual Add2 p0               Load= 96B Store=  8B FLOPs= 96 AI=0.9
+  [12] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [13] LayerNorm 2 → Out p0           Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [14] FFN Out+Res Add2 t1 p0         Load= 72B Store= 16B FLOPs=240 AI=2.7
+  [15] Save X→RES p0                  Load= 72B Store=  8B FLOPs=136 AI=1.7
+  [16] LN scratch p0                  Load=  0B Store=  8B FLOPs=  8 AI=1.0
+  [17] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [18] Residual Add2 p0               Load= 96B Store=  8B FLOPs= 96 AI=0.9
+  [19] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [20] LayerNorm 2 → Out p0           Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [21] FFN Out+Res Add2 t1 p0         Load= 72B Store= 16B FLOPs=240 AI=2.7
+  [22] Save X→RES p0                  Load= 72B Store=  8B FLOPs=136 AI=1.7
+  [23] LN scratch p0                  Load=  0B Store=  8B FLOPs=  8 AI=1.0
+  [24] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [25] Residual Add2 p0               Load= 96B Store=  8B FLOPs= 96 AI=0.9
+  [26] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [27] LayerNorm 2 → Out p0           Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [28] FFN Out+Res Add2 t1 p0         Load= 72B Store= 16B FLOPs=240 AI=2.7
+  [29] Save X→RES p0                  Load= 72B Store=  8B FLOPs=136 AI=1.7
+  [30] LN scratch p0                  Load=  0B Store=  8B FLOPs=  8 AI=1.0
+  [31] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [32] Residual Add2 p0               Load= 96B Store=  8B FLOPs= 96 AI=0.9
+  [33] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [34] LayerNorm 2 → Out p0           Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [35] FFN Out+Res Add2 t1 p0         Load= 72B Store= 16B FLOPs=240 AI=2.7
+  [36] Save X→RES p0                  Load= 72B Store=  8B FLOPs=136 AI=1.7
+  [37] LN scratch p0                  Load=  0B Store=  8B FLOPs=  8 AI=1.0
+  [38] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [39] Residual Add2 p0               Load= 96B Store=  8B FLOPs= 96 AI=0.9
+  [40] Residual Add1 t1 p0            Load= 24B Store=  8B FLOPs= 16 AI=0.5
+  [41] LayerNorm 2 → Out p0           Load=  8B Store=  8B FLOPs=  0 AI=0.0
+
+=== Tile Structure Analysis ===
+num_tiles=1, MV_MUL per projection=1, heads_per_tile=2
+Each projection loops over 1x1 tiles = 1 MV_MUL calls
+6 projections = 36 MV_MUL total
+
+=== Skills to Apply ===
+1. Read jimu-dse/results/dag_agent/micro_op_dag.txt
+   and jimu-dse/docs/skills/isa/dim-optimize.md to apply the dim-optimize transformation.
+
+=== Focus: Correct Single-Tile Operation (dim=4) ===
+The baseline firmware was designed for dim=2 (multi-tile). You are upgrading
+it to run correctly at dim=4 (single-tile, num_tiles=1).
+Rewrite mvm_tiled_q, attention, layer_norm, and gelu to use straight-line
+single-tile operations. Fix heads_per_tile=2 attention masking.
+The primary metric is test_pass — make dim4-h4 tests pass.
+DRAM reduction is secondary and will be optimized in a separate pass.
+
+=== Structural Statistics ===
+MV_MUL count: currently optimal (num_tiles=1 at runtime).
+The goal is CODE CORRECTNESS: remove tile loop overhead and fix masking.
+=== Constraints ===
+- Only modify firmware/bert/bert_layer.c
+- Do NOT modify the emulator or any other file
+- File must compile: gcc for RISC-V (NATIVE_DIM=4)
+
+=== Self-Verify ===
+python3 -m pytest tests/integration/test_bert_e2e.py -k "dim4 and h4" -s --no-header 2>&1 | grep max_diff

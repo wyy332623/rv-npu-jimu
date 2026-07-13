@@ -196,10 +196,7 @@ def collapse_to_micro_ops(events: list[dict]) -> list[MicroOp]:
             continue
 
         # ── DRAM_LOAD standalone (V_RD_DRAM not followed by V_WR) ──
-        #    NOTE: V_RD_DRAM followed by MV_MUL (not V_WR) is handled by
-        #    the MV_MUL pattern below — skip here so it can absorb it.
-        _mvul_next = i + 1 < n and events[i + 1]["op"] in ("MV_MUL", "MV_MULINC")
-        if op_str == "V_RD_DRAM" and not _mvul_next and (i + 1 >= n or events[i + 1]["op"] != "V_WR"):
+        if op_str == "V_RD_DRAM" and (i + 1 >= n or events[i + 1]["op"] != "V_WR"):
             dram_src = [r for r in ev["uses"] if r[0] == "DRAM"]
             ops.append(MicroOp(
                 kind="DRAM_LOAD",
@@ -273,31 +270,25 @@ def collapse_to_micro_ops(events: list[dict]) -> list[MicroOp]:
             i += 2
             continue
 
-        # ── MV_MUL: [V_RD|V_RD_DRAM,] MV_MUL, [V_WR+, ATTN_PAD] ───
-        #    The compute core. V_RD or V_RD_DRAM loads the vector into the
-        #    pipeline, MV_MUL multiplies pipeline × MRF, then optional V_WR
-        #    stores the result.  Both V_RD and V_RD_DRAM are valid prefixes:
-        #    when the vector comes directly from DRAM (e.g. single-chain
-        #    example), the DRAM load is absorbed into the MV_MUL micro-op
-        #    rather than appearing as a standalone DRAM_LOAD node.
-        #
+        # ── MV_MUL: [V_RD,] MV_MUL, [V_WR+, ATTN_PAD] ────────────────
+        #    The compute core. V_RD loads the vector, MV_MUL multiplies
+        #    pipeline vector × MRF, then optional V_WR stores result and
+        #    ATTN_PAD signals attention padding boundary.
         #    Handles these firmware patterns:
-        #      V_RD, V_RD, MV_MUL, V_WR             (standard tile, VRF)
-        #      V_RD_DRAM, MV_MUL, V_WR              (DRAM → compute, single tile)
-        #      V_RD, MV_MUL, V_WR                   (single staging)
-        #      MV_MUL, V_WR                         (pipeline already loaded)
-        #      V_RD, MV_MUL                         (ATTN_PAD, no trailing WR)
-        #      MV_MUL                               (ATTN_PAD, pipeline loaded)
+        #      V_RD, V_RD, MV_MUL, V_WR       (standard tile)
+        #      V_RD, MV_MUL, V_WR             (single staging)
+        #      MV_MUL, V_WR                   (pipeline already loaded)
+        #      V_RD, MV_MUL                   (ATTN_PAD, no trailing WR)
+        #      MV_MUL                         (ATTN_PAD, pipeline loaded)
         absorbed_prefix = False
-        _mvul_prefix = frozenset({"V_RD", "V_RD_DRAM"})
-        if op_str in _mvul_prefix and i + 1 < n and events[i + 1]["op"] in ("MV_MUL", "MV_MULINC"):
+        if op_str == "V_RD" and i + 1 < n and events[i + 1]["op"] in ("MV_MUL", "MV_MULINC"):
             absorbed_prefix = True
             j_start = i
         elif op_str in ("MV_MUL", "MV_MULINC"):
             j_start = i
-        elif op_str in _mvul_prefix and i + 2 < n:
+        elif op_str == "V_RD" and i + 2 < n:
             j = i + 1
-            while j < n and events[j]["op"] in _mvul_prefix:
+            while j < n and events[j]["op"] == "V_RD":
                 j += 1
             if j < n and events[j]["op"] in ("MV_MUL", "MV_MULINC"):
                 absorbed_prefix = True
@@ -309,25 +300,19 @@ def collapse_to_micro_ops(events: list[dict]) -> list[MicroOp]:
 
         if j_start is not None:
             j = j_start
-            # Skip past V_RD/V_RD_DRAM prefixes to find MV_MUL
-            while j < n and events[j]["op"] in _mvul_prefix:
+            # Skip past V_RDs to find MV_MUL
+            while j < n and events[j]["op"] == "V_RD":
                 j += 1
             if j < n and events[j]["op"] in ("MV_MUL", "MV_MULINC"):
                 mul_idx = j
                 j += 1
-                # Collect trailing V_WR(s), V_FUNC(SOFTMAX) + V_WR,
-                # and optional ATTN_PAD.
+                # Collect trailing V_WR(s) and optional ATTN_PAD
                 # ATTN_PAD is a MV_MULINC branch that has no V_WR after it.
-                # We absorb sequences up to (but not including) the next
-                # V_RD_DRAM, M_RD_DRAM, or a V_RD that starts a new
-                # operand load.  V_FUNC(SOFTMAX) + V_WR is absorbed
-                # because softmax is semantically the tail of the
-                # attention score compute (scores = Q×K, softmax scores).
+                # We absorb V_WR up to (but not including) the next
+                # V_RD_DRAM, M_RD_DRAM, V_FUNC, or a V_RD that starts
+                # a new operand load.
                 while j < n and events[j]["op"] == "V_WR":
                     j += 1
-                if (j < n and events[j]["op"] == "V_FUNC/SOFTMAX"
-                        and j + 1 < n and events[j + 1]["op"] == "V_WR"):
-                    j += 2  # absorb V_FUNC(SOFTMAX) + V_WR
                 instr_range = list(range(j_start, j))
                 uses = []
                 for k in instr_range:
@@ -337,11 +322,6 @@ def collapse_to_micro_ops(events: list[dict]) -> list[MicroOp]:
                 for k in instr_range:
                     if events[k]["op"] == "V_WR":
                         defs.extend(_non_pipe(events[k]["defs"]))
-                # If V_FUNC(SOFTMAX) was absorbed, its V_WR defs are
-                # already captured above; record SOFTMAX as a detail.
-                absorbed_softmax = (j - mul_idx >= 3
-                    and any(events[k]["op"] == "V_FUNC/SOFTMAX"
-                            for k in range(mul_idx, j)))
 
                 # Add MRF use — MV_MUL reads the MRF row that was
                 # last loaded by the most recent MAT_LOAD or M_ACC.
@@ -350,7 +330,7 @@ def collapse_to_micro_ops(events: list[dict]) -> list[MicroOp]:
 
                 ops.append(MicroOp(
                     kind="MV_MUL",
-                    name="MV_MUL+SOFTMAX" if absorbed_softmax else "MV_MUL",
+                    name="MV_MUL",
                     event_indices=instr_range,
                     defs=defs,
                     uses=uses,

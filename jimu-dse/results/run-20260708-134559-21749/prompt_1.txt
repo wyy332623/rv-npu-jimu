@@ -1,0 +1,124 @@
+You are optimizing NPU firmware at firmware/bert/bert_layer.c.
+
+Goal: dram-optimization (dim=2, hidden=4, num_head=2)
+Current header: /* NPU — BERT Encoder Layer Firmware (All Features)
+Primary metric: total_bytes
+MV_MUL count: 192
+M_RD_DRAM ops (weight tile loads): 144
+Current DRAM: seq=2=2144B, seq=6=6240B (ratio 2.9x)
+
+=== DRAM Cluster Analysis (seq=6) ===
+  [ 0] K Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 1] K Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 2] K Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 3] K Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 4] K Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 5] K Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 6] V Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 7] V Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 8] V Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [ 9] V Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [10] V Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [11] V Proj                         Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [12] Q Proj p0                      Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [13] Attn Score+Softmax p0          Load= 32B Store=  8B FLOPs= 60 AI=1.5
+  [14] Attn Context p0                Load= 16B Store=  8B FLOPs= 24 AI=1.0
+  [15] Self-Output p0                 Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [16] Save X→RES p0                  Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [17] Residual Add1 p0               Load=  8B Store=  4B FLOPs=  8 AI=0.7
+  [18] Residual Add1 t1 p0            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [19] LN scratch p0                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [20] LayerNorm 1 p0                 Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [21] FFN Inter+GELU p0              Load= 48B Store=  8B FLOPs= 52 AI=0.9
+  [22] Residual Add2 p0               Load= 56B Store=  4B FLOPs= 56 AI=0.9
+  [23] Residual Add1 t1 p0            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [24] LN scratch p0                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [25] LayerNorm 2 → Out p0           Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [26] Q Proj p1                      Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [27] Attn Score+Softmax p1          Load= 32B Store=  8B FLOPs= 60 AI=1.5
+  [28] Attn Context p1                Load= 16B Store=  8B FLOPs= 24 AI=1.0
+  [29] Self-Output p1                 Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [30] Save X→RES p1                  Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [31] Residual Add1 p1               Load=  8B Store=  4B FLOPs=  8 AI=0.7
+  [32] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [33] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [34] LayerNorm 1 p1                 Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [35] FFN Inter+GELU p1              Load= 48B Store=  8B FLOPs= 52 AI=0.9
+  [36] Residual Add2 p1               Load= 56B Store=  4B FLOPs= 56 AI=0.9
+  [37] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [38] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [39] LayerNorm 2 → Out p1           Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [40] Q Proj p1                      Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [41] Attn Score+Softmax p1          Load= 32B Store=  8B FLOPs= 60 AI=1.5
+  [42] Attn Context p1                Load= 16B Store=  8B FLOPs= 24 AI=1.0
+  [43] Self-Output p1                 Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [44] Save X→RES p1                  Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [45] Residual Add1 p1               Load=  8B Store=  4B FLOPs=  8 AI=0.7
+  [46] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [47] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [48] LayerNorm 1 p1                 Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [49] FFN Inter+GELU p1              Load= 48B Store=  8B FLOPs= 52 AI=0.9
+  [50] Residual Add2 p1               Load= 56B Store=  4B FLOPs= 56 AI=0.9
+  [51] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [52] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [53] LayerNorm 2 → Out p1           Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [54] Q Proj p1                      Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [55] Attn Score+Softmax p1          Load= 32B Store=  8B FLOPs= 60 AI=1.5
+  [56] Attn Context p1                Load= 16B Store=  8B FLOPs= 24 AI=1.0
+  [57] Self-Output p1                 Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [58] Save X→RES p1                  Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [59] Residual Add1 p1               Load=  8B Store=  4B FLOPs=  8 AI=0.7
+  [60] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [61] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [62] LayerNorm 1 p1                 Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [63] FFN Inter+GELU p1              Load= 48B Store=  8B FLOPs= 52 AI=0.9
+  [64] Residual Add2 p1               Load= 56B Store=  4B FLOPs= 56 AI=0.9
+  [65] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [66] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [67] LayerNorm 2 → Out p1           Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [68] Q Proj p1                      Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [69] Attn Score+Softmax p1          Load= 32B Store=  8B FLOPs= 60 AI=1.5
+  [70] Attn Context p1                Load= 16B Store=  8B FLOPs= 24 AI=1.0
+  [71] Self-Output p1                 Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [72] Save X→RES p1                  Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [73] Residual Add1 p1               Load=  8B Store=  4B FLOPs=  8 AI=0.7
+  [74] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [75] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [76] LayerNorm 1 p1                 Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [77] FFN Inter+GELU p1              Load= 48B Store=  8B FLOPs= 52 AI=0.9
+  [78] Residual Add2 p1               Load= 56B Store=  4B FLOPs= 56 AI=0.9
+  [79] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [80] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [81] LayerNorm 2 → Out p1           Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [82] Q Proj p1                      Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [83] Attn Score+Softmax p1          Load= 32B Store=  8B FLOPs= 60 AI=1.5
+  [84] Attn Context p1                Load= 16B Store=  8B FLOPs= 24 AI=1.0
+  [85] Self-Output p1                 Load= 48B Store=  8B FLOPs= 48 AI=0.9
+  [86] Save X→RES p1                  Load=  8B Store=  8B FLOPs=  0 AI=0.0
+  [87] Residual Add1 p1               Load=  8B Store=  4B FLOPs=  8 AI=0.7
+  [88] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [89] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [90] LayerNorm 1 p1                 Load= 16B Store=  8B FLOPs=  8 AI=0.3
+  [91] FFN Inter+GELU p1              Load= 48B Store=  8B FLOPs= 52 AI=0.9
+  [92] Residual Add2 p1               Load= 56B Store=  4B FLOPs= 56 AI=0.9
+  [93] Residual Add1 t1 p1            Load= 12B Store=  4B FLOPs=  8 AI=0.5
+  [94] LN scratch p1                  Load=  0B Store=  4B FLOPs=  0 AI=0.0
+  [95] LayerNorm 2 → Out p1           Load= 16B Store=  8B FLOPs=  8 AI=0.3
+
+=== Tile Structure Analysis ===
+num_tiles=2, MV_MUL per projection=4, heads_per_tile=1
+Each projection loops over 2x2 tiles = 4 MV_MUL calls
+6 projections = 144 MV_MUL total
+
+=== Skills to Apply ===
+1. Read jimu-dse/results/dag_agent/micro_op_dag.txt
+   and jimu-dse/docs/skills/isa/vrf-cache.md to apply the vrf-cache transformation.
+
+- Keep all existing functions (mvm_tiled_q, etc.) intact — only add VRF cache
+=== Constraints ===
+- Only modify firmware/bert/bert_layer.c
+- Do NOT modify the emulator or any other file
+- File must compile: gcc for RISC-V (NATIVE_DIM=2)
+
+=== Self-Verify ===
+python3 -m pytest tests/integration/test_bert_e2e.py -k "dim2 and h4" -s --no-header 2>&1 | grep max_diff

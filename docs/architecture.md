@@ -8,27 +8,12 @@ the NPU executes them via its functional units.
 The architecture is optimized for the patterns found in transformer models:
 matrix-vector multiply, softmax, layer normalization, GELU, and residual adds.
 
-### Two Instruction Issuing Modes
-
-| Mode | Mechanism | Use Case |
-|------|-----------|----------|
-| **Per-instruction** | Each write to `INST_FIFO` stalls until `STATUS=DONE`. Firmware polls `NPU_STATUS` after every instruction. | Configuration (S_WR), simple sequences, debug. `npu_send_inst()` in `npu_driver.c`. |
-| **Chain-based** | Multiple instructions are written without per-instruction stalls, then committed atomically via `INST_ISSUE`. The `CHAIN_STATUS` register tracks per-unit busy state. | Compute-heavy sequences (MVM, softmax, residual). `npu_chain_begin()` + `npu_chain_commit()` + `npu_wait_chain()`. |
-
-In per-instruction mode, each instruction must complete before the next
-begins.  In chain mode, instructions within a chain flow through the
-pipeline register without DRAM save-load roundtrips, and independent
-chains can overlap in hardware (SMC — Simultaneous Multi-Chaining).
-
 ### Key Design Principles
 
 - **Firmware-driven**: all computation is expressed as MMIO writes from a
   RISC-V CPU. The NPU has no instruction cache or sequencer.
-- **Synchronous execution (per-instruction mode)**: each instruction runs
-  to completion before the next starts. No pipelining, no parallel dispatch.
-- **Asynchronous execution (chain mode)**: instructions within a chain
-  sequence through the pipeline register; multiple chains can run
-  concurrently on different functional units.
+- **Synchronous execution**: each instruction runs to completion before the
+  next starts. No pipelining, no parallel dispatch.
 - **Data-parallel**: all units operate on vectors of `NATIVE_DIM` elements.
 - **Transformer-optimized**: ISA directly supports the ops needed for
   attention, feed-forward, and normalization layers.
@@ -39,28 +24,17 @@ chains can overlap in hardware (SMC — Simultaneous Multi-Chaining).
 ┌──────────────────────────────────────────────────────────────────────────┐
 │                           RISC-V CPU (firmware)                         │
 │                                                                          │
-│    Mode A: Per-instruction                          Mode B: Chain-based │
-│    ──────────────────────                          ──────────────────── │
-│    send(SI(OP_M_RD_DRAM))                          npu_chain_begin()    │
-│    while(STATUS != DONE);     ← stal               send(...)            │
-│    send(SI(OP_MV_MUL, 0, 0))                       send(...)            │
-│    while(STATUS != DONE);     ← stal               npu_chain_commit()   │
-│    send(SI(OP_V_WR, ...))                          while(CHAIN_STATUS)  │
-│    while(STATUS != DONE);     ← stal               ← per-unit busy      │
+│    send(SI(OP_M_RD_DRAM, a))     send(SI(OP_MV_MUL, 0, 0))             │
+│    send(SI(OP_V_FUNC, 0, 0))     while(STATUS != DONE);                │
 └──────────────────────┬───────────────────────────────────────────────────┘
                        │ MMIO (32-bit instruction words)
                        ▼
 ┌──────────────────────────────────────────────────────────────────┐
 │                     Instruction Decoder                          │
 │                                                                  │
-│  Per-instruction path:  decode → execute → STATUS=DONE           │
-│  Chain path:            decode → chain FIFO → INST_ISSUE commits │
-│                                                                  │
-│  Pipeline register threads values between instructions:          │
-│    V_RD → pipe, MV_MUL → pipe, V_FUNC → pipe, V_WR captures    │
-│                                                                  │
-│  CHAIN_STATUS tracks per-unit busy (bit0=VMM, bit1=MMM, bit2=   │
-│  MVU).  No scoreboard, no hazard checking in Python emulator.    │
+│  Executes each instruction synchronously to completion.          │
+│  No scoreboard, no hazard checking, no chain parallelism —       │
+│  the Python emulator does not model timing.                      │
 └──────┬─────────────────────┬────────────────┬──────────┬──────────┘
        │                     │                │          │
        ▼                     ▼                ▼          ▼
@@ -191,37 +165,17 @@ Only one tile can be resident at a time.
 
 ## Execution Model (Python Emulator)
 
-The Python emulator implements both instruction issuing modes:
-
-### Per-Instruction Mode
-
 1. Firmware writes instruction word to `INST_FIFO` (MMIO offset 0x00).
 2. Emulator decodes the 32-bit opcode and operands.
 3. Emulator calls the appropriate functional unit method, which may
    call into `libnpukernels.so` via ctypes for arithmetic.
 4. Instruction completes synchronously.
-5. `STATUS` (offset 0x04) becomes `DONE`.
-6. Firmware reads `STATUS` to confirm completion before the next write.
-
-### Chain Mode
-
-1. Firmware writes multiple instruction words to `INST_FIFO` without
-   polling `STATUS` between them.
-2. Each instruction executes synchronously in sequence (the emulator has
-   no parallelism), with the pipeline register threading values between
-   consecutive instructions.
-3. Firmware writes `INST_ISSUE` to commit the chain.
-4. Firmware polls `CHAIN_STATUS` (offset 0x0C) until all bits are 0,
-   indicating all functional units have completed.
-
-### Differences from Hardware Model
+5. `STATUS` (offset 0x04) returns `DONE`.
+6. Firmware reads `STATUS` to confirm completion.
 
 The Python emulator is single-threaded and non-pipelined. Each instruction
 runs to completion before the next starts. There is no cycle counter,
-no hazard detection, and no parallel dispatch. The chain mode exists for
-correctness verification only — in a hardware implementation, instructions
-within a chain would target different functional units and execute in
-parallel (see specification.md §3.3 for details).
+no hazard detection, and no parallel dispatch.
 
 ## Implementation: Python vs C
 
@@ -311,33 +265,31 @@ with a compile-time-scheduled dataflow fabric. Key differences:
 | Compilation | Full static scheduling (tensor → assembly → time) | C firmware with inline MMIO instructions |
 | Functional units | 320 SXM modules (each with MAC + mem) | MVU + MFU(3) + SLU + TMM |
 
-### FSA — Fused Systolic Attention
+### SFA — Systolic Flash Attention
 
-FSA (arXiv:2507.11331 "SystolicAttention: Fusing FlashAttention within a
-Single Systolic Array", [github.com/VCA-EPFL/FSA](https://github.com/VCA-EPFL/FSA))
-is an enhanced systolic array architecture that runs the entire FlashAttention
-(Q×K^T → softmax → S×V) on a single systolic array without external vector
-units. It achieves fine-grained element-wise overlapping of the attention
-operations, maximizing array utilization while preserving the original FP
-operation order of FlashAttention.
+SFA (ICLR 2024 spotlight) is a near-memory systolic array architecture that
+accelerates attention via flash-memory-inspired SRAM hierarchy with online
+softmax fusion. It emphasizes the same attention-specific optimizations as
+this NPU.
 
-| Aspect | FSA | This NPU |
+| Aspect | SFA | This NPU |
 |--------|-----|----------|
-| Compute engine | Single systolic array for all attention phases | Sequential MVU + MFU + SLU |
-| Softmax | Element-wise on systolic array | Discrete `V_FUNC(SOFTMAX)` instruction |
-| Overlap | Fine-grained, element-wise fused | Per-operation (load → compute → store) |
-| Implementation | Synthesizable RTL (16nm, 1.5GHz) | Python functional emulator |
-| Programmability | Custom kernel (SystolicAttention) | RISC-V firmware with MMIO instructions |
-| Tiling strategy | FlashAttention-style (tiled across SRAM banks) | Tile-row based (weight tiles × positions) |
+| Memory focus | Flash-style hierarchical SRAM for attention matrices | Flat DRAM reads; on-chip VRF |
+| Softmax fusion | Online softmax fused with GEMM (tiled) | Fused `V_FUNC(SOFTMAX)` instruction |
+| Sparsity support | Explicit support for sparse attention patterns | None (dense attention only) |
+| Compute engine | Systolic GEMM with fused softmax pipeline | Sequential MVU + separate SLU |
+| Programmability | Custom instruction stream | RISC-V + NPU instruction stream |
+| Target metric | Prefill latency (LLM serving) | Generic transformer inference (research) |
+| Tiling strategy | Flash Attention-style (tiled Q/K/V across SRAM banks) | Tile-row based (weight tiles × positions) |
 
 ### Key Architectural Differences Summary
 
-| Feature | Brainwave | Groq LPU | FSA | This NPU |
+| Feature | Brainwave | Groq LPU | SFA | This NPU |
 |---------|-----------|----------|-----|----------|
 | Fabric | FPGA overlay | Custom ASIC (7nm) | Custom ASIC (simulated) | Python emulator |
-| Dispatch model | CPU-driven | Static schedule (dataflow) | CUDA-like kernel launch | Per-instruction + chain-based (dual mode) |
+| Dispatch model | CPU-driven | Static schedule (dataflow) | CUDA-like kernel launch | CPU-driven |
 | Dot product | Systolic array | SIMD MAC array | Systolic + fused softmax | Sequential (1 row/cycle) |
-| Normalization | Microcoded | SIMD elementwise | Online fused (in GEMM) | Fused `V_FUNC` HW |
+| Normalization | Microcoded | SIMD elementwise | Online fused | Fused `V_FUNC` HW |
 | Hazard detection | None (sequencer order) | None (compile-time) | None (kernel sync) | Scoreboard (RAW/WAR/WAW) |
 | On-chip storage | BRAM banks (~10MB) | Distributed SRAM (~230MB) | SRAM hierarchy (banks) | VRF + MRF (~64KB) |
 | Target deployment | Cloud inference serving | LLM inference (datacenter) | LLM prefill (research) | Single-chip research |

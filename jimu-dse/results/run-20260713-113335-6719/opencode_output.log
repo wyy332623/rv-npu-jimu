@@ -1,0 +1,103 @@
+[0m
+> build · big-pickle
+[0m
+[0m→ [0mSkill "dag-analyze"
+I'll start by reading the dag-analyze skill and understanding the DAG structure to identify DRAM save-load pairs for VRF caching.
+[0m• [0mFind DRAM save-load pairs[90m General Agent[0m
+Now let me analyze the DAG for save-load pairs:
+[0m✓ [0mFind DRAM save-load pairs[90m General Agent[0m
+[0m
+[0m$ [0mls /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/.opencode/skills/dag-analyze/scripts/ 2>/dev/null; ls /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/.opencode/skills/vrf-cache/
+SKILL.md
+[0m
+Excellent. Now let me run the test to see the baseline and understand the firmware structure better:
+[0m$ [0mpython3 -m pytest adderboard/tests/test_phase2.py -k "140p and first_step" -s --no-header 2>&1 | tail -20
+============================= test session starts ==============================
+collected 20 items / 19 deselected / 1 selected
+
+adderboard/tests/test_phase2.py   [adder] logits: max_diff=0.000145
+.
+
+======================= 1 passed, 19 deselected in 2.75s =======================
+[0m
+[0m→ [0mSkill "vrf-cache"
+[0m→ [0mRead .opencode/skills/vrf-cache/SKILL.md
+[0m✱ [0mGrep "140p"[90m in adderboard/tests · 55 matches[0m
+[0m
+[0m$ [0mpython3 -m pytest adderboard/tests/test_phase2.py -k "140p and first_step" -s --no-header 2>&1 | head -5
+============================= test session starts ==============================
+collected 20 items / 19 deselected / 1 selected
+
+adderboard/tests/test_phase2.py   [adder] logits: max_diff=0.000145
+.
+[0m
+Now I need to understand the firmware's DRAM save-load patterns. Let me analyze the DAG more carefully and map the DRAM addresses to firmware tensors:
+
+From the DAG analysis, the save-load pairs are at DRAM addresses 0x500 and 0x508. These correspond to:
+
+- **0x500**: `S_ATTN_RES` (attention residual output), `S_PROB` (softmax output), and intermediate results
+- **0x508**: Layernorm output (used immediately after)
+
+Let me look more carefully at the firmware to understand the exact operations and find the save-load pairs in context:
+
+Looking at the DAG:
+- Node 52: `DRAM_STORE [95] defs=DRAM[0x500]` ← Node 51 SOFTMAX (first softmax output stored to 0x500)
+- Node 68: `DRAM_LOAD [124-125] uses=DRAM[0x500]` ← Node 52 via 0x500 (loaded back)
+- Node 83: `DRAM_STORE [147] defs=DRAM[0x500]` ← Node 82 SOFTMAX (second softmax)
+- Node 99: `DRAM_LOAD [176-177] uses=DRAM[0x500]` ← Node 83 via 0x500
+- Node 118: `DRAM_STORE [214-215] defs=DRAM[0x500]` ← Node 117 VV_ADD
+- Node 121: `DRAM_LOAD [220] uses=DRAM[0x500]` ← Node 118 via 0x500
+- Node 150: `DRAM_STORE [280-281] defs=DRAM[0x500]` ← Node 149 VV_ADD
+- Node 153: `DRAM_LOAD [286] uses=DRAM[0x500]` ← Node 150 via 0x500
+- Node 123: `DRAM_STORE [223] defs=DRAM[0x508]` ← Node 122 LAYERNORM
+- Node 124: `DRAM_LOAD [224-225] uses=DRAM[0x508]` ← Node 123 via 0x508
+- Node 155: `DRAM_STORE [289] defs=DRAM[0x508]` ← Node 154 LAYERNORM
+- Node 156: `DRAM_LOAD [290-291] uses=DRAM[0x508]` ← Node 155 via 0x508
+
+Now the key question is - which of these are applicable to the firmware code in `adder_140p.c`? I need to trace through the firmware to map the DRAM addresses.
+
+Looking at the firmware defines:
+- `S_ATTN_RES = SCR_BASE + ...` at 0x2000+ range
+- `S_PROB = S_SCORE + MAX_SEQ = S_CTX + MAX_SEQ*MODEL_DIM + MAX_SEQ*MODEL_DIM + MAX_SEQ*MODEL_DIM + MAX_SEQ*MODEL_DIM + MAX_SEQ` = complex, let me compute
+
+Actually the firmware addresses are S_BASE2=0x3000 for phase 2. Let me re-read the DAG more carefully with the firmware context.
+
+The DAG has DRAM addresses like 0x500, 0x508, 0x700, 0x800, 0x900, 0x904, 0x18, 0x2c, etc. These are real DRAM addresses (not firmware scratch offsets).
+
+Let me look at the test to understand the simulation environment:
+[0m→ [0mRead adderboard/tests/_test_140p_phase2.py
+Now I understand the structure. Let me analyze what the DAG's save-load pairs mean for this firmware and look at how the firmware actually works for the 140p model. The DAG represents a compacted micro-op sequence from the NPU compiler. Let me understand the DRAM addresses in the DAG:
+
+From the DAG:
+- Node 52: `DRAM_STORE [95] uses=- defs=DRAM[0x500]` — this writes the softmax output to 0x500
+- Node 68: `DRAM_LOAD [124-125] uses=DRAM[0x500] defs=VRF[5][0]` — reads back from 0x500
+- Node 83: `DRAM_STORE [147] uses=- defs=DRAM[0x500]` — another softmax output
+- Node 99: `DRAM_LOAD [176-177] uses=DRAM[0x500] defs=VRF[5][0]` — reads it back
+
+These patterns suggest intermediate storage. But looking at the firmware, the key save-load pairs seem to be about **layernorm** output and **residual** output.
+
+Let me look at the firmware more carefully to trace the DRAM flow, specifically around the layernorm and how it stores/loads from 0x500 and 0x508:
+
+In the DAG, looking at the full flow:
+- Node 115: `DRAM_LOAD [206-207] uses=DRAM[0x0] defs=VRF[7][0]` - loads K/V from 0x0
+- Node 116: `DRAM_STORE [208-209] uses=VRF[7][0] defs=DRAM[0x700]` - stores to 0x700
+- Node 117: `VV_BINOP [210-213] uses=VRF[6][8],VRF[7][0] defs=VRF[7][0]` - VV_ADD
+- Node 118: `DRAM_STORE [214-215] uses=VRF[7][0] defs=DRAM[0x500]` - stores to 0x500
+- Node 121: `DRAM_LOAD [220] uses=DRAM[0x500]` - loads from 0x500 ← Save-load pair!
+
+Then layernorm at 122, store to 0x508 at 123, load from 0x508 at 124.
+
+Then more QKV projections, more attention, etc.
+
+Now the question is: which of these save-load pairs are in the firmware's control? Let me look at the firmware code to find where 0x500 and 0x508 are written.
+
+In the firmware, the scratch layout defines:
+```
+S_ATTN_RES = S_ATTN_OUT + MAX_SEQ * MODEL_DIM = ...
+S_PROB = S_SCORE + MAX_SEQ
+```
+
+These are in the 0x2000 range (SCR_BASE). The DAG uses 0x500, 0x508 etc. which likely correspond to the actual DRAM addresses in the memory map.
+
+Let me check the test to understand the DRAM address map used by the emulator/test:
+[0m→ [0mRead adderboard/layout/layout_140p.py

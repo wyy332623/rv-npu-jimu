@@ -12,7 +12,7 @@
 #define NPU_INST_FIFO          0x00    // [WO] Push 32-bit instruction word
 #define NPU_STATUS             0x04    // [RO] NPU status
 #define NPU_RESET              0x08    // [WO] Write 1 to reset
-#define NPU_CHAIN_STATUS       0x0C    // [RO] Per-unit busy: bit0=VMM, bit1=MMM, bit2=MVU
+#define NPU_CHAIN_STATUS       0x0C    // [RO] Per-unit busy: bit0=VMM, bit1=MMM, bit2=MVU, bit3=pipe
 
 // --- Status bits (read from NPU_STATUS) ---
 //   bit 0: BUSY  (1 = busy)

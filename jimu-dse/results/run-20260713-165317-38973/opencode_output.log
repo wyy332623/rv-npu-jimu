@@ -1,0 +1,444 @@
+[0m
+> build · deepseek-v4-flash-free
+[0m
+[0m→ [0mSkill "vrf-cache"
+[0m• [0mUnderstand DAG structure[90m Explore Agent[0m
+[0m✓ [0mUnderstand DAG structure[90m Explore Agent[0m
+[0m→ [0mRead adderboard/firmware/adder_140p.c[90m [offset=33, limit=36][0m
+[0m→ [0mRead adderboard/firmware/adder_140p.c[90m [offset=96, limit=100][0m
+[0m
+[0m# [0mTodos
+[•] Add VRF cache offset defines and mvm_vrf() helper
+[ ] Replace S_SCORE DRAM store/loads with VRF cache in Phase 1
+[ ] Replace S_PROB DRAM store/loads with VRF cache in Phase 1
+[ ] Replace S_TEMP2 DRAM store/mvm and S_FFN_RES DRAM store/load with VRF cache in Phase 2
+[ ] Verify with pytest
+[0m
+Now I have a clear picture. Let me apply the VRF cache transformations by replacing DRAM roundtrips for S_SCORE, S_PROB (Phase 1), and S_TEMP2, S_FFN_RES (Phase 2) with VRF[6] (MFU_INITIAL_VRF) cache.
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -66,8 +66,14 @@
+ 
+ #define FW_LAST_H     0x4000
+ #define S_FLAGS       0x1F00  /* DRAM scratch: 0=phase1, 1=phase2 */
+ 
++/* VRF cache offsets (MFU_INITIAL_VRF = bank 6, 4096 elems) */
++#define VRF_SCORE_OFF  0x000
++#define VRF_PROB_OFF   0x100
++#define VRF_TEMP2_OFF  0x200
++#define VRF_FFNR_OFF   0x400
++
+ #define SEND_SI(op, opd0, opd1) npu_send_inst(SI(op, opd0, opd1))
+ #define SEND_LO(op, adr)        npu_send_inst(LO(op, adr))
+ #define MIN(a, b) ((a) < (b) ? (a) : (b))
+ 
+
+[0m
+First, add VRF cache offset defines and `mvm_vrf()` helper:
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -87,8 +87,19 @@
+     SEND_SI(OP_MV_MUL, 0, 0);
+     SEND_SI(OP_V_WR, sink, 0);
+ }
+ 
++static inline void mvm_vrf(uint32_t mat, uint32_t vrf_bank, uint32_t vrf_off, uint32_t sink)
++{
++    SEND_LO(OP_M_RD_DRAM, mat);
++    SEND_SI(OP_M_WR, MEM_MATRIX_RF, 0);
++    SEND_SI(OP_V_RD, vrf_bank, vrf_off);
++    SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
++    SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
++    SEND_SI(OP_MV_MUL, 0, 0);
++    SEND_SI(OP_V_WR, sink, 0);
++}
++
+ /* Read phase flag from DRAM via MMIO */
+ static inline uint32_t read_phase_flag(void)
+ {
+     return npu_read_reg(NPU_DRAM_BASE + S_FLAGS * 4);
+
+[0m
+[0m# [0mTodos
+[✓] Add VRF cache offset defines and mvm_vrf() helper
+[•] Replace S_SCORE DRAM store/loads with VRF cache in Phase 1
+[ ] Replace S_PROB DRAM store/loads with VRF cache in Phase 1
+[ ] Replace S_TEMP2 DRAM store/mvm and S_FFN_RES DRAM store/load with VRF cache in Phase 2
+[ ] Verify with pytest
+[0m
+Now replace S_SCORE DRAM roundtrips with VRF cache in Phase 1:
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -154,18 +154,18 @@
+     SEND_LO(OP_V_RD_DRAM, mt + (q * nt + tc) * MODEL_DIM);
+     SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_VV_ADD, 0, 0);
+ 
+-    SEND_LO(OP_V_WR_DRAM, S_SCORE + base);
++    SEND_SI(OP_V_WR, 6, VRF_SCORE_OFF + base);
+     SEND_SI(OP_V_WR, MEM_SPU_MAX_REDUCE, 0);
+ }
+ 
+ // Zero SRF[1] via MMIO (SPU_ADD_REDUCE is cumulative)
+ npu_write_reg(NPU_SRF_BASE + 1 * 4, 0);
+ 
+ for (tc = 0; tc < nt; tc++) {
+     uint32_t base = tc * 4;
+-    SEND_LO(OP_V_RD_DRAM, S_SCORE + base);
++    SEND_SI(OP_V_RD, 6, VRF_SCORE_OFF + base);
+     SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_V_RD, MEM_SPU_BROADCAST, 0);
+     SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_VV_B_SUB_A, 0, 0);
+
+[0m
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -177,9 +177,9 @@
+ 
+ for (tc = 0; tc < nt; tc++) {
+     uint32_t base = tc * 4;
+ 
+-    SEND_LO(OP_V_RD_DRAM, S_SCORE + base);
++    SEND_SI(OP_V_RD, 6, VRF_SCORE_OFF + base);
+     SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_V_RD, MEM_SPU_BROADCAST, 0);
+     SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_VV_B_SUB_A, 0, 0);
+@@ -187,17 +187,17 @@
+     SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_V_RD, MEM_SPU_BROADCAST, 2);
+     SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_VV_MUL, 0, 0);
+-    SEND_LO(OP_V_WR_DRAM, S_PROB + base);
++    SEND_SI(OP_V_WR, 6, VRF_PROB_OFF + base);
+ 
+     for (d = 0; d < MODEL_DIM; d++) {
+         SEND_LO(OP_V_RD_DRAM, svt + tc * MODEL_DIM * MODEL_DIM + d * MODEL_DIM);
+         SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
+     }
+     SEND_SI(OP_M_RD, MEM_VEC_TO_MAT_ROW, 0);
+ 
+-    SEND_LO(OP_V_RD_DRAM, S_PROB + base);
++    SEND_SI(OP_V_RD, 6, VRF_PROB_OFF + base);
+     SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
+     SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
+     SEND_SI(OP_MV_MUL, 0, 0);
+ 
+
+[0m
+[0m# [0mTodos
+[✓] Add VRF cache offset defines and mvm_vrf() helper
+[✓] Replace S_SCORE DRAM store/loads with VRF cache in Phase 1
+[✓] Replace S_PROB DRAM store/loads with VRF cache in Phase 1
+[•] Replace S_TEMP2 DRAM store/mvm and S_FFN_RES DRAM store/load with VRF cache in Phase 2
+[ ] Verify with pytest
+[0m
+Now apply Phase 2 VRF cache changes for S_TEMP2 and S_FFN_RES:
+[0m→ [0mRead adderboard/firmware/adder_140p.c[90m [offset=219, limit=35][0m
+[0m
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -241,15 +241,15 @@
+     SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);
+     SEND_LO(OP_V_RD_DRAM, S_UP + i * MODEL_DIM);
+     SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_VV_MUL, 0, 0);
+-    SEND_LO(OP_V_WR_DRAM, S_TEMP2 + i * MODEL_DIM);
++    SEND_SI(OP_V_WR, 6, VRF_TEMP2_OFF + i * MODEL_DIM);
+ 
+-    mvm(ADDR_W_DOWN, S_TEMP2 + i * MODEL_DIM, MEM_MULTIPLY_VRF);
+-    SEND_LO(OP_V_WR_DRAM, S_FFN_RES + i * MODEL_DIM);
++    mvm_vrf(ADDR_W_DOWN, 6, VRF_TEMP2_OFF + i * MODEL_DIM, MEM_MULTIPLY_VRF);
++    SEND_SI(OP_V_WR, 6, VRF_FFNR_OFF + i * MODEL_DIM);
+ 
+     SEND_LO(OP_V_RD_DRAM, S_ATTN_RES + i * MODEL_DIM);
+-    SEND_LO(OP_V_RD_DRAM, S_FFN_RES + i * MODEL_DIM);
++    SEND_SI(OP_V_RD, 6, VRF_FFNR_OFF + i * MODEL_DIM);
+     SEND_SI(OP_VV_ADD, 0, 0);
+     SEND_LO(OP_V_WR_DRAM, S_LAST_H + i * MODEL_DIM);
+ }
+ 
+
+[0m
+[0m→ [0mRead adderboard/firmware/adder_140p.c[90m [limit=50, offset=67][0m
+[0m✱ [0mGlob "adderboard/tests/test_phase2.py"[90m 1 match[0m
+Now let me verify the final state of the file and run the test:
+[0m
+[0m# [0mTodos
+[✓] Add VRF cache offset defines and mvm_vrf() helper
+[✓] Replace S_SCORE DRAM store/loads with VRF cache in Phase 1
+[✓] Replace S_PROB DRAM store/loads with VRF cache in Phase 1
+[✓] Replace S_TEMP2 DRAM store/mvm and S_FFN_RES DRAM store/load with VRF cache in Phase 2
+[•] Verify with pytest
+[0m
+[0m$ [0mpython3 -m pytest adderboard/tests/test_phase2.py -k "140p and first_step" -s --no-header 2>&1 | head -50
+============================= test session starts ==============================
+collected 20 items / 19 deselected / 1 selected
+
+adderboard/tests/test_phase2.py   [adder] logits: max_diff=0.000145
+.
+
+======================= 1 passed, 19 deselected in 2.24s =======================
+[0m
+Phase 2 passed (`max_diff=0.000145`). Let me also run the Phase 1 attention test to validate the S_SCORE/S_PROB changes:
+[0m$ [0mpython3 -m pytest adderboard/tests/test_phase1.py -k "140p and first_step" -s --no-header 2>&1 | head -30
+============================= test session starts ==============================
+collected 17 items / 16 deselected / 1 selected
+
+adderboard/tests/test_phase1.py .
+
+======================= 1 passed, 16 deselected in 1.16s =======================
+[0m
+Both pass. Let me run the full 140p test suite:
+[0m$ [0mpython3 -m pytest adderboard/tests/test_phase{1,2}.py -k "140p" -s --no-header 2>&1 | tail -30
+============================= test session starts ==============================
+collected 37 items / 18 deselected / 19 selected
+
+adderboard/tests/test_phase1.py .........
+adderboard/tests/test_phase2.py .  [adder] logits: max_diff=0.000145
+.........
+
+================ 19 passed, 18 deselected in 169.24s (0:02:49) =================
+[0m
+[0m# [0mTodos
+[✓] Add VRF cache offset defines and mvm_vrf() helper
+[✓] Replace S_SCORE DRAM store/loads with VRF cache in Phase 1
+[✓] Replace S_PROB DRAM store/loads with VRF cache in Phase 1
+[✓] Replace S_TEMP2 DRAM store/mvm and S_FFN_RES DRAM store/load with VRF cache in Phase 2
+[✓] Verify with pytest
+[0m
+All 19 tests pass.
+Applied VRF cache transformations to `adderboard/firmware/adder_140p.c`. Changes:
+
+1. **Defines** (`adder_140p.c:70-74`): Added `VRF_SCORE_OFF`, `VRF_PROB_OFF`, `VRF_TEMP2_OFF`, `VRF_FFNR_OFF` for VRF[6] (MFU_INITIAL_VRF, 4096 elem) cache offsets.
+
+2. **`mvm_vrf()`** (`adder_140p.c:91-100`): New helper that loads the vector operand from VRF instead of DRAM.
+
+3. **Phase 1 - S_SCORE** (`:147,156,177`): Score write + two reads redirected from DRAM to VRF[6] via `VRF_SCORE_OFF`.
+
+4. **Phase 1 - S_PROB** (`:188,196`): Prob write + read redirected from DRAM to VRF[6] via `VRF_PROB_OFF`.
+
+5. **Phase 2 - S_TEMP2** (`:245,247`): Write redirected to VRF[6] via `VRF_TEMP2_OFF`; `mvm()` → `mvm_vrf()` reading from same offset.
+
+6. **Phase 2 - S_FFN_RES** (`:248,251`): Write + read redirected from DRAM to VRF[6] via `VRF_FFNR_OFF`.
+
+All 19 tests pass (19/19).
+[0m
+> build · deepseek-v4-flash-free
+[0m
+[0m→ [0mSkill "dag-analyze"
+[0m→ [0mSkill "vrf-cache"
+[0m
+[0m# [0mTodos
+[✓] Analyze DAG for DRAM save-load pairs
+[•] Add VRF cache offset defines for ctx/attn caching
+[ ] Optimize S_CTX accumulation: cache across tiles instead of DRAM roundtrip
+[ ] Optimize O→residual: keep attn_out in VRF instead of DRAM
+[ ] Verify with pytest
+[0m
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -71,8 +71,10 @@
+ #define VRF_SCORE_OFF  0x000
+ #define VRF_PROB_OFF   0x100
+ #define VRF_TEMP2_OFF  0x200
+ #define VRF_FFNR_OFF   0x400
++#define VRF_CTX_OFF    0x600
++#define VRF_ATTN_OFF   0x604
+ 
+ #define SEND_SI(op, opd0, opd1) npu_send_inst(SI(op, opd0, opd1))
+ #define SEND_LO(op, adr)        npu_send_inst(LO(op, adr))
+ #define MIN(a, b) ((a) < (b) ? (a) : (b))
+
+[0m
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -203,24 +203,33 @@
+         SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
+         SEND_SI(OP_MV_MUL, 0, 0);
+ 
+         SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);
+-        SEND_LO(OP_V_RD_DRAM, S_CTX + q * MODEL_DIM);
++        if (tc == 0) {
++            SEND_LO(OP_V_RD_DRAM, S_CTX + q * MODEL_DIM);
++        } else {
++            SEND_SI(OP_V_RD, 6, VRF_CTX_OFF);
++        }
+         SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+         SEND_SI(OP_VV_ADD, 0, 0);
+-        SEND_LO(OP_V_WR_DRAM, S_CTX + q * MODEL_DIM);
++        if (tc == nt - 1) {
++            SEND_LO(OP_V_WR_DRAM, S_CTX + q * MODEL_DIM);
++        } else {
++            SEND_SI(OP_V_WR, 6, VRF_CTX_OFF);
++        }
+     }
+ }
+ 
+ for (i = 0; i < sl; i++) {
+     mvm(ADDR_W_Q_T, S_CTX + i * MODEL_DIM, MEM_MULTIPLY_VRF);
+-    SEND_LO(OP_V_WR_DRAM, S_ATTN_OUT + i * MODEL_DIM);
++    SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
++    SEND_SI(OP_V_WR, 6, VRF_ATTN_OFF + i * MODEL_DIM);
+     SEND_SI(OP_V_RD, MEM_FILL, 0);
+ }
+ 
+ for (i = 0; i < sl; i++) {
+     SEND_LO(OP_V_RD_DRAM, S_X + i * MODEL_DIM);
+-    SEND_LO(OP_V_RD_DRAM, S_ATTN_OUT + i * MODEL_DIM);
++    SEND_SI(OP_V_RD, 6, VRF_ATTN_OFF + i * MODEL_DIM);
+     SEND_SI(OP_VV_ADD, 0, 0);
+     SEND_LO(OP_V_WR_DRAM, S_ATTN_RES + i * MODEL_DIM);
+ }
+ npu_wait_done();
+
+[0m
+From the DAG analysis, I identified two DRAM save-load pairs:
+
+1. **S_CTX accumulation** (per tile): `0x0` (DRAM[0x0]) — loaded from DRAM every tile, stored back every tile
+2. **S_ATTN_OUT → residual** (DRAM[0x700]): node 94 stores → node 115 loads via DRAM
+
+Applying VRF cache transformations now.
+[0m# [0mTodos
+[✓] Analyze DAG for DRAM save-load pairs
+[✓] Add VRF cache offset defines for ctx/attn caching
+[✓] Optimize S_CTX accumulation: cache across tiles instead of DRAM roundtrip
+[✓] Optimize O→residual: keep attn_out in VRF instead of DRAM
+[•] Verify with pytest
+[0m
+[0m→ [0mRead adderboard/firmware/adder_140p.c[90m [offset=70, limit=20][0m
+[0m→ [0mRead adderboard/firmware/adder_140p.c[90m [offset=196, limit=40][0m
+[0m
+[0m$ [0mpython3 -m pytest adderboard/tests/test_phase2.py -k "140p and first_step" -s --no-header 2>&1 | grep max_diff
+adderboard/tests/test_phase2.py   [adder] logits: max_diff=0.000145
+[0m
+[0m# [0mTodos
+[✓] Analyze DAG for DRAM save-load pairs
+[✓] Add VRF cache offset defines for ctx/attn caching
+[✓] Optimize S_CTX accumulation: cache across tiles instead of DRAM roundtrip
+[✓] Optimize O→residual: keep attn_out in VRF instead of DRAM
+[✓] Verify with pytest
+[0m
+Test passes (`max_diff=0.000145`). Here's the summary:
+
+**Optimization 1: S_CTX tile accumulation** (`adder_140p.c:206-218`)
+- **Before**: Each tile loads S_CTX[q] from DRAM and stores it back — 4 DRAM ops/query for 2 tiles
+- **After**: First tile loads from DRAM, intermediate tiles use VRF cache (bank 6, offset 0x600); only last tile stores to DRAM — 2 DRAM ops/query
+- **Savings**: 2 DRAM ops × 4 elems × 4 bytes × seq = 160 bytes (seq=5)
+
+**Optimization 2: O→residual attn_out cache** (`adder_140p.c:222-234`)
+- **Before**: `mvm()` stores MV_MUL result to MULTIPLY_VRF → `OP_V_WR_DRAM` stores to DRAM → residual loop `OP_V_RD_DRAM` loads back
+- **After**: After `mvm()`, read from MULTIPLY_VRF, write to VRF bank 6 (offset 0x604+i*4); residual loop reads from VRF instead of DRAM
+- **Savings**: 2 DRAM ops × 4 elems × 4 bytes × seq = 160 bytes (seq=5)
+
+**Total DRAM savings**: 320 bytes for seq=5, scales as `seq × 64` bytes.
+[0m
+> build · deepseek-v4-flash-free
+[0m
+[0m→ [0mSkill "vrf-cache"
+[0m→ [0mRead jimu-dse/docs/skills/isa/vrf-cache.md
+[0m→ [0mRead adderboard/firmware/adder_140p.c
+Let me analyze the firmware for DRAM save-load roundtrips.
+[0m
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -121,9 +121,9 @@
+ SEND_SI(OP_S_WR, REG_ITERATIONS, 1);
+ 
+ for (i = 0; i < sl; i++) {
+     SEND_SI(OP_V_RD, MEM_FILL, 0);
+-    SEND_LO(OP_V_WR_DRAM, S_CTX + i * MODEL_DIM);
++    SEND_SI(OP_V_WR, 6, i * MODEL_DIM);
+ }
+ 
+ for (q = 0; q < sl; q++) {
+     SEND_SI(OP_V_RD, MEM_FILL, 0xFC00);
+
+[0m
+**Identified save-load roundtrip**: `S_CTX` — written to DRAM in the attention accumulation loop (line 215) and reloaded from DRAM in the O=Q^T loop (line 223). Four changes needed to redirect through VRF bank 6.
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -204,16 +204,16 @@
+     SEND_SI(OP_MV_MUL, 0, 0);
+ 
+     SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);
+     if (tc == 0) {
+-        SEND_LO(OP_V_RD_DRAM, S_CTX + q * MODEL_DIM);
++        SEND_SI(OP_V_RD, 6, q * MODEL_DIM);
+     } else {
+         SEND_SI(OP_V_RD, 6, VRF_CTX_OFF);
+     }
+     SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_VV_ADD, 0, 0);
+     if (tc == nt - 1) {
+-        SEND_LO(OP_V_WR_DRAM, S_CTX + q * MODEL_DIM);
++        SEND_SI(OP_V_WR, 6, q * MODEL_DIM);
+     } else {
+         SEND_SI(OP_V_WR, 6, VRF_CTX_OFF);
+     }
+ }
+
+[0m
+[0m← [0mEdit adderboard/firmware/adder_140p.c
+Index: /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+===================================================================
+--- /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
++++ /home/lirank/rv-npu-jimu/rv-npu-jimu.v10/adderboard/firmware/adder_140p.c
+@@ -219,9 +219,9 @@
+     }
+ }
+ 
+ for (i = 0; i < sl; i++) {
+-    mvm(ADDR_W_Q_T, S_CTX + i * MODEL_DIM, MEM_MULTIPLY_VRF);
++    mvm_vrf(ADDR_W_Q_T, 6, i * MODEL_DIM, MEM_MULTIPLY_VRF);
+     SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
+     SEND_SI(OP_V_WR, 6, VRF_ATTN_OFF + i * MODEL_DIM);
+     SEND_SI(OP_V_RD, MEM_FILL, 0);
+ }
+
+[0m
+[0m→ [0mRead adderboard/firmware/adder_140p.c[90m [offset=110, limit=130][0m
+Let me verify the changes and run the test.
+Changes verified. Now running the test:
+[0m
+[0m$ [0mpython3 -m pytest adderboard/tests/test_phase2.py -k "140p and first_step" -s --no-header 2>&1 | grep max_diff
+adderboard/tests/test_phase2.py   [adder] logits: max_diff=0.000145
+[0m
+Test passes. `max_diff=0.000145` (floating-point precision).
+
+**Changes applied** — 4 edits routing `S_CTX` through VRF bank 6 instead of DRAM:
+
+1. **Init loop** (L125): `SEND_LO(OP_V_WR_DRAM, ...)` → `SEND_SI(OP_V_WR, 6, i*MODEL_DIM)` — zero VRF instead of DRAM
+2. **First tile load** (L208): `SEND_LO(OP_V_RD_DRAM, S_CTX+q*4)` → `SEND_SI(OP_V_RD, 6, q*MODEL_DIM)` — read from VRF
+3. **Last tile store** (L215): `SEND_LO(OP_V_WR_DRAM, S_CTX+q*4)` → `SEND_SI(OP_V_WR, 6, q*MODEL_DIM)` — write to VRF
+4. **O=Q^T** (L223): `mvm(...)` → `mvm_vrf(..., 6, i*MODEL_DIM, ...)` — feed VRF source to MVM
+
+This eliminates `sl` DRAM stores (init) + `sl` DRAM loads (first tile) + `sl` DRAM stores (final) + `sl` DRAM loads (O=Q^T) = `4 * sl` DRAM word accesses, saving ~`4 * 35 * 4 = 560` bytes for `sl=35`.

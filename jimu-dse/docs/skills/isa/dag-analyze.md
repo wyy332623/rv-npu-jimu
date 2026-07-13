@@ -38,8 +38,7 @@ The edge `<- [33 DRAM_STORE] via DRAM[0x300]` at node 150 shows that node 150 re
 
 1. Find the DRAM_STORE — check the event indices (`[71-72]`) and find the corresponding firmware code
 2. Find the DRAM_LOAD — check the event index and find the corresponding firmware code
-3. Both are in `firmware/bert/bert_layer.c`
-4. The DRAM address tells you which tensor: 0x200=Q, 0x300=K, 0x400=V
+3. The DRAM address tells you which tensor in the firmware's scratch space the NPU is targeting. Look at the C macros defining DRAM mapping layout.
 
 ### Interpreting Cluster View
 

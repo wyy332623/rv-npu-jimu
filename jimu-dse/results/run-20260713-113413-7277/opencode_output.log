@@ -1,0 +1,53 @@
+[0m
+> build · big-pickle
+[0m
+[0m→ [0mSkill "dim-optimize"
+[0m
+[0m$ [0mcd /home/lirank/rv-npu-jimu/rv-npu-jimu.v10 && python3 -m pytest tests/integration/test_bert_e2e.py -k "dim4 and h4" -s --no-header 2>&1 | tail -30
+s
+  Config: dim=4, lanes=4, num_head=2, hidden_size=4, head_size=2, seq_len=6
+  num_tiles = 1 (each tile = 4×4)
+  Mode: 1×1-tile (hidden_size > dim)
+
+  Round 0: FP16 golden reference...
+  Golden out[:4]:   [ 1.1699 -0.1423  0.0232 -1.3301]
+
+  Round 1: Firmware on emulator (multi-tile, dim=8)...
+  Input X (pos 0)[:4]: [ 0.7251 -0.2019  0.9458  2.2227]
+  Instructions executed: 1931
+  Emulator out[:4]:  [ 1.1729 -0.1541  0.0246 -1.3242]
+  Round 1 out: max_diff=0.011719, mean_diff=0.005482
+
+  DRAM traffic (float32 elements):
+    V_RD_DRAM: 150 ops × 8 el = 600 el
+    V_WR_DRAM: 48 ops × 8 el = 192 el
+    M_RD_DRAM: 36 ops × 64 el = 576 el
+    M_WR_DRAM: 0 ops × 64 el = 0 el
+    Total: 1368 elements (5472 bytes)
+  ✅ Multi-tile opcode coverage complete
+  Total instructions: 1931
+  Opcodes hit: ['MV_MUL', 'M_RD_DRAM', 'M_WR', 'S_WR', 'VV_ADD', 'V_FUNC', 'V_GELU', 'V_RD', 'V_RD_DRAM', 'V_WR', 'V_WR_DRAM']
+  Round 2: skipped (install amaranth for HDL validation)
+  Round 3: skipped (install amaranth for HDL validation)
+  
+  ✅ All rounds complete - output matches golden (firmware tile-MHA)
+.
+
+================== 1 passed, 1 skipped, 4 deselected in 1.10s ==================
+[0m
+[0m$ [0mcd /home/lirank/rv-npu-jimu/rv-npu-jimu.v10 && python3 -m pytest tests/integration/test_bert_e2e.py -k "dim4 and h4" -s --no-header 2>&1 | grep -E "(dim=|hidden=|num_tiles|MV_MUL|M_RD|test_pass|max_diff|FAIL|PASS|Error)"
+Config: dim=4, lanes=4, num_head=2, hidden_size=4, head_size=2, seq_len=2
+  num_tiles = 1 (each tile = 4×4)
+  Round 1: Firmware on emulator (multi-tile, dim=8)...
+  Round 1 out: max_diff=0.029785, mean_diff=0.018738
+    M_RD_DRAM: 12 ops × 64 el = 192 el
+  Opcodes hit: ['MV_MUL', 'M_RD_DRAM', 'M_WR', 'S_WR', 'VV_ADD', 'V_FUNC', 'V_GELU', 'V_RD', 'V_RD_DRAM', 'V_WR', 'V_WR_DRAM']
+  Config: dim=4, lanes=4, num_head=2, hidden_size=4, head_size=2, seq_len=6
+  num_tiles = 1 (each tile = 4×4)
+  Round 1: Firmware on emulator (multi-tile, dim=8)...
+  Round 1 out: max_diff=0.011719, mean_diff=0.005482
+    M_RD_DRAM: 36 ops × 64 el = 576 el
+  Opcodes hit: ['MV_MUL', 'M_RD_DRAM', 'M_WR', 'S_WR', 'VV_ADD', 'V_FUNC', 'V_GELU', 'V_RD', 'V_RD_DRAM', 'V_WR', 'V_WR_DRAM']
+[0m
+[0m→ [0mRead firmware/bert/bert_layer.c[90m [offset=91, limit=120][0m
+[0m→ [0mSkill "vrf-cache"

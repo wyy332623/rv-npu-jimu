@@ -8,88 +8,62 @@ license: MIT
 
 ## Problem
 
-The firmware computes K=V=Wx+b for each position, saves to DRAM via `save_row_tiles()`, then the attention code reloads from DRAM via `V_RD_DRAM`. This roundtrip is unnecessary when the target VRF has capacity.
+The firmware often computes intermediate results (like K, V, Q, Z, SO, or Layernorm outputs), saves them to DRAM via store macros/functions (like `save_row_tiles()`, `SEND_LO(OP_V_WR_DRAM, ...)`), and then downstream operations reload them from DRAM via `V_RD_DRAM`. This roundtrip is unnecessary when the target VRF has capacity.
 
 ## VRF Capacity
 
 | VRF Bank | Mem ID | Size (elements) | Used for |
 |----------|--------|-----------------|----------|
-| MFU_INITIAL_VRF | 6 | 4096 | GELU activation (temporary) |
+| MFU_INITIAL_VRF | 6 | 4096 | General intermediate cache (e.g. GELU) |
 | ADDSUB_VRF_0 | 7 | 1024 | Tile row 0 accumulator |
 | ADDSUB_VRF_1 | 8 | 4096 | Tile row 1 accumulator + X cache |
 | ADDSUB_VRF_2 | 9 | 64 | Second tile row (multi-tile) |
 | MVM_INITIAL_VRF | 5 | 20480 | MVM input vector |
 | MULTIPLY_VRF | 1 | 64 | Temporary MVM result |
 
-For dim=2, hidden=4, seq_len=6:
-- K per position: 4 elements (2 tile rows × 2 dim)
-- V per position: 4 elements
-- Q per position: 4 elements
-- All 6 positions' K+V: 48 elements total
-- MFU_INITIAL_VRF capacity: 4096 elements → **0.6% used**
+**MFU_INITIAL_VRF (mem 6)** is typically chosen as the scratchpad because of its large capacity (4096 elements).
 
 ## Transformation
 
-### Step 1: After computing K/V in `mvm_tiled_q()`
+You need to analyze the specific codebase you are editing. **The following patterns apply to ANY NPU workload**, not just BERT. Do not blindly search for `mvm_tiled_q` or `SAVE_K_BASE` if they don't exist in the current firmware.
 
-After `mvm_tiled_q()` produces K in `ADDSUB_VRF_0/1`, the firmware calls `save_row_tiles()` to write to DRAM. Instead:
+### Generic Step 1: Locate Save-Load Pairs in the C Code
+Use the `dag-analyze` skill output to identify which DRAM addresses represent save-load roundtrips. Find the corresponding C code where these addresses are written and read.
+- **Save Pattern**: Look for `SEND_LO(OP_V_WR_DRAM, <addr>)` or wrappers that perform this action.
+- **Load Pattern**: Look for `SEND_LO(OP_V_RD_DRAM, <addr>)` or wrappers that perform this action.
 
-1. Insert VREG_MOVE instructions to copy from `ADDSUB_VRF_0/1` to `MFU_INITIAL_VRF` (mem 6) at position-indexed offsets
-2. Skip `save_row_tiles()` — the data stays on-chip
+### Generic Step 2: Redirect Save to VRF Cache
+Instead of saving to DRAM, move the data to a designated VRF bank (typically 6, `MEM_MFU_INITIAL_VRF`). You must assign a unique `cache_offset` for each saved element to prevent overwriting.
 
-The VREG_MOVE pattern:
 ```c
-// Instead of:
-save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
-               MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+// Instead of storing to DRAM:
+// SEND_LO(OP_V_WR_DRAM, addr); 
 
-// Use:
-uint32_t cache_offset = pos * num_tiles * NATIVE_DIM;
-SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
-SEND_SI(OP_V_WR, 6, cache_offset);  // MFU_INITIAL_VRF[offset]
-SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
-SEND_SI(OP_V_WR, 6, cache_offset + NATIVE_DIM);
+// Use VRF Cache (Assuming data is currently in a source VRF like MEM_ADDSUB_VRF_0):
+uint32_t cache_offset = <compute unique offset based on loop indices>;
+// If data isn't already active for reading, activate it:
+// SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0); 
+SEND_SI(OP_V_WR, 6, cache_offset);  // Write to MFU_INITIAL_VRF[offset]
 ```
 
-### Step 2: Load K/V from VRF during attention
+### Generic Step 3: Redirect Load from VRF Cache
+Replace the subsequent DRAM loads with VRF reads using the same `cache_offset`.
 
-In `dot_product_attention()`, the K.T tile build uses:
 ```c
-SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
-```
+// Instead of loading from DRAM:
+// SEND_LO(OP_V_RD_DRAM, addr);
 
-Replace with VRF reads:
-```c
-uint32_t cache_offset = p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
-SEND_SI(OP_V_RD, 6, cache_offset);  // MFU_INITIAL_VRF[offset]
-```
-
-Similarly for V (used in V.T build and V.T re-transpose).
-
-### Step 3: Handle K/V across tile rows
-
-With num_tiles=2, each position has 2 tile rows (tr=0, tr=1). Both must be cached:
-```c
-uint32_t cache_offset = pos * num_tiles * NATIVE_DIM;
-// tr=0 stored at cache_offset
-// tr=1 stored at cache_offset + NATIVE_DIM
+// Use VRF Cache:
+uint32_t cache_offset = <compute the exact same unique offset>;
+SEND_SI(OP_V_RD, 6, cache_offset);
 ```
 
 ## What NOT to change
 
-- Do NOT modify the Q projection. Q is computed per-position during attention, not pre-computed for all positions. Q should stay in ADDSUB_VRF and be consumed directly.
-- Do NOT modify the weight loading (M_RD_DRAM). Weights must come from DRAM.
-- Do NOT modify the emulator. Only modify `firmware/bert/bert_layer.c`.
-- Do NOT change the numerical computation. The same W×x+b is performed; only the output routing changes.
+- Do NOT modify the weight loading (`OP_M_RD_DRAM`). Weights must come from DRAM.
+- Do NOT modify the emulator. Only modify the firmware file associated with the workload you are targeting (e.g. `firmware/bert/bert_layer.c`, `adderboard/firmware/adder_140p.c`).
+- Do NOT change the numerical computation. The same arithmetic operations must be performed; only the output routing changes.
 
 ## Verification
 
-Run the instrumented test to check all operators produce correct output:
-```bash
-python3 -m pytest tests/integration/test_bert_e2e.py --instrument -k seq6 -s --no-header 2>&1 | grep "max_diff"
-```
-
-All values must be < 0.05. Also verify the DRAM reduction:
-```bash
-python3 -m pytest tests/integration/test_bert_e2e.py -k seq6 -s 2>&1 | grep "DRAM"
-```
+After modifying the firmware, validate with the project's testing instructions. You can use the `self-verify` skill or check your instructions for the exact verify and convergence check commands to run.

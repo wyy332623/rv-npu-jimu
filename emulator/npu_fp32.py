@@ -38,81 +38,77 @@ class NpuFP32(NpuDeviceMini):
 
     def __init__(self, native_dim=4):
         super().__init__(native_dim=native_dim)
-        self._round_fp16 = lambda arr: arr if arr is not None else None
-        self._store_to_ivrf = lambda p: None
+        self._pipeline_round_fp16 = lambda: None
+        self._store_to_ivrf = lambda: None
 
     # ── Override all FP16-truncating methods ──
-    #
-    # New API: each handler takes (pipeline, vpipe_a) and returns
-    # (pipeline_out, vpipe_a_out).
 
-    def _v_rd_dram(self, full_operand, pipeline=None, vpipe_a=None):
+    def _v_rd_dram(self, opcode, opd0, opd1, full_operand=0):
         addr = full_operand
         dram = self._vrf.get(MEM_DRAM)
         if dram is not None:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
             n = min(self.native_dim, len(dram) - addr) if addr < len(dram) else 0
-            result = np.zeros(self.native_dim, dtype=np.float32)
+            self._pipeline = np.zeros(self.native_dim, dtype=np.float32)
             if n > 0:
-                result[:n] = dram[addr:addr + n]
-            return result, pipeline
-        return np.zeros(self.native_dim, dtype=np.float32), pipeline
+                self._pipeline[:n] = dram[addr:addr + n]
 
-    def _v_wr_dram(self, full_operand, pipeline=None):
-        if pipeline is None:
-            return
+    def _v_wr_dram(self, opcode, opd0, opd1, full_operand=0):
         addr = full_operand
         dram = self._vrf.get(MEM_DRAM)
-        if dram is not None:
-            n = min(self.native_dim, len(pipeline), len(dram) - addr) if addr < len(dram) else 0
+        if dram is not None and self._pipeline is not None:
+            n = min(self.native_dim, len(self._pipeline), len(dram) - addr) if addr < len(dram) else 0
             if n > 0:
-                dram[addr:addr + n] = pipeline[:n]
+                dram[addr:addr + n] = self._pipeline[:n]
 
-    def _m_rd(self, opd0, full_operand, pipeline=None, vpipe_a=None):
-        """Override: VecToMatRow uses parent."""
-        return super()._m_rd(opd0, full_operand, pipeline=pipeline, vpipe_a=vpipe_a)
-
-    def _m_rd_dram(self, full_operand):
-        """Override: DRAM → MRF with direct copy, no FP16 rounding."""
+    def _m_rd(self, opcode, opd0, opd1, full_operand=0):
+        if opd0 == MEM_VEC_TO_MAT_ROW:
+            return super()._m_rd(opcode, opd0, opd1, full_operand)
         addr = full_operand
         dram = self._vrf.get(MEM_DRAM)
         if dram is not None and addr < len(dram):
             n = self._regs.get(1, 1) * self.native_dim
             mrf_size = n * n
             if addr + mrf_size <= len(dram):
-                self._dram_stats['mat_rd_elements'] += mrf_size
-                self._dram_stats['mat_rd_ops'] += 1
                 mat = dram[addr:addr + mrf_size].reshape(n, n).copy()
                 self._mrf[MEM_MATRIX_RF] = mat
 
-    def _v_rd(self, opd0, opd1, pipeline=None, vpipe_a=None):
+    def _v_rd(self, opcode, opd0, opd1):
         mem_target, addr = opd0, opd1
         if mem_target == MEM_FILL:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
             val = np.frombuffer(np.uint16([addr]).tobytes(), dtype=np.float16)[0]
-            return np.full(self.native_dim, float(val), dtype=np.float32), pipeline
+            self._pipeline = np.full(self.native_dim, float(val), dtype=np.float32)
+            return
         if mem_target == MEM_SPU_BROADCAST:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
             val = self._spu_srf[addr] if addr < len(self._spu_srf) else 0.0
-            return np.full(self.native_dim, val, dtype=np.float32), pipeline
+            self._pipeline = np.full(self.native_dim, val, dtype=np.float32)
+            return
         vrf = self._vrf.get(mem_target)
         if vrf is not None:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
             n = min(self.native_dim, max(0, len(vrf) - addr))
-            result = np.zeros(self.native_dim, dtype=np.float32)
+            self._pipeline = np.zeros(self.native_dim, dtype=np.float32)
             if n > 0:
-                result[:n] = vrf[addr:addr + n]
-            return result, pipeline
-        return np.zeros(self.native_dim, dtype=np.float32), pipeline
+                self._pipeline[:n] = vrf[addr:addr + n]
 
-    def _v_wr(self, opd0, opd1, pipeline=None):
-        if pipeline is None:
-            return
+    def _v_wr(self, opcode, opd0, opd1):
         mem_target, addr = opd0, opd1
-        # SPU reduce
+        if self._pipeline is None:
+            return
+        # SPU reduce (accumulating)
         if mem_target == MEM_SPU_ADD_REDUCE:
             if addr < len(self._spu_srf):
-                self._spu_srf[addr] = float(np.sum(pipeline)) + self._spu_srf[addr]
+                self._spu_srf[addr] = float(np.sum(self._pipeline)) + self._spu_srf[addr]
             return
-        if mem_target in (MEM_SPU_MAX_REDUCE, MEM_SPU_ABSMAX_REDUCE):
+        if mem_target == MEM_SPU_MAX_REDUCE or mem_target == MEM_SPU_ABSMAX_REDUCE:
             if addr < len(self._spu_srf):
-                data = pipeline if mem_target == MEM_SPU_MAX_REDUCE else np.abs(pipeline)
+                data = self._pipeline if mem_target == MEM_SPU_MAX_REDUCE else np.abs(self._pipeline)
                 self._spu_srf[addr] = max(float(np.max(data)), self._spu_srf[addr])
             return
         # VecToMatRow
@@ -120,13 +116,13 @@ class NpuFP32(NpuDeviceMini):
             key = 0
             if key not in self._row_buffer:
                 self._row_buffer[key] = []
-            self._row_buffer[key].append(pipeline.copy())
+            self._row_buffer[key].append(self._pipeline.copy())
             return
         # General VRF store (no FP16 truncation)
         vrf = self._vrf.setdefault(mem_target, np.zeros(self.native_dim * 8, dtype=np.float32))
         n = min(self.native_dim, max(0, len(vrf) - addr))
         if n > 0:
-            vrf[addr:addr + n] = pipeline[:n]
+            vrf[addr:addr + n] = self._pipeline[:n]
 
     # ── Convenience methods ──
 
@@ -143,6 +139,9 @@ class NpuFP32(NpuDeviceMini):
         n = min(len(arr), len(self._vrf[MEM_DRAM]) - addr)
         self._vrf[MEM_DRAM][addr:addr + n] = arr[:n].astype(np.float32)
 
+    def get_pipeline(self):
+        return self._pipeline.copy() if self._pipeline is not None else None
+
     def send(self, inst):
         """Push one instruction through the FIFO."""
         self._push_instruction(inst)
@@ -158,6 +157,7 @@ class NpuFP32(NpuDeviceMini):
         if not hasattr(self, '_ops_log'):
             return set()
         return set(name for name, _ in self._ops_log)
+
 
     # ── High-level instruction helpers ──
 

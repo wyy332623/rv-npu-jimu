@@ -1,0 +1,20 @@
+  # Name                 Prod             Cons             Instr       Ids
+---------------------------------------------------------------------------
+  0 MVM_Q                Q                Q                  222     0-221
+  1 MVM_SCRATCH          SCRATCH          Q,SCRATCH,UNIT_VEC    64   222-285
+    <- [0 MVM_Q] via Q
+  2 MVM_Z                Z                Z                   65   286-350
+  3 SAVE_SO_SCRATCH      SO_SCRATCH       -                    8   351-358
+  4 RESIDUAL_ADD         RES              SO_SCRATCH          12   359-370
+    <- [3 SAVE_SO_SCRATCH] via SO_SCRATCH
+  5 LN1                  SCRATCH          SCRATCH             21   371-391
+    <- [1 MVM_SCRATCH] via SCRATCH
+  6 FFN_GELU             LN1              LN1                 71   392-462
+  7 MVM_GELU             GELU             GELU,RES            73   463-535
+    <- [4 RESIDUAL_ADD] via RES
+  8 LN2                  SCRATCH          SCRATCH             21   536-556
+    <- [5 LN1] via SCRATCH
+  9 SAVE_OUT             OUT              -                    3   557-559
+ 10 OP_10                -                -                    1   560-560
+
+Total: 11 operators, 5 edges

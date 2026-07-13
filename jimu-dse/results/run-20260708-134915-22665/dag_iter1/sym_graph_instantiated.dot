@@ -1,0 +1,22 @@
+digraph op_graph {
+  node [shape=box, style=filled, fillcolor=lightyellow];
+  rankdir=TB;
+  n0 [label="MVM_Q_0\n→ Q"];
+  n1 [label="MVM_SCRATCH_0\n→ SCRATCH"];
+  n2 [label="MVM_Z_0\n→ Z"];
+  n3 [label="SAVE_SO_SCRATCH_0\n→ SO_SCRATCH"];
+  n4 [label="RESIDUAL_ADD_0\n→ RES"];
+  n5 [label="LN1_0\n→ SCRATCH"];
+  n6 [label="FFN_GELU_0\n→ LN1"];
+  n7 [label="MVM_GELU_0\n→ GELU"];
+  n8 [label="LN2_0\n→ SCRATCH"];
+  n9 [label="SAVE_OUT\n→ OUT"];
+  n10 [label="OP_10"];
+  n11 [label="MVM_OUT_0\n→ OUT"];
+  n12 [label="OP_20_0"];
+  n0 -> n1 [label="Q"];
+  n1 -> n5 [label="SCRATCH"];
+  n3 -> n4 [label="SO_SCRATCH"];
+  n4 -> n7 [label="RES"];
+  n5 -> n8 [label="SCRATCH"];
+}

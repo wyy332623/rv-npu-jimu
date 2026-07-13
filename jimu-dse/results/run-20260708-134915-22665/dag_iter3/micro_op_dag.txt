@@ -1,0 +1,621 @@
+  0 VREG_LD          VREG_LD(fill)        [0-1]        uses=- defs=VRF[13][0]
+  1 S_WR             S_WR                 [2]          uses=- defs=REG[20]  REG[20]
+  2 S_WR             S_WR                 [3]          uses=- defs=REG[1]  REG[1]
+  3 S_WR             S_WR                 [4]          uses=- defs=REG[2]  REG[2]
+  4 S_WR             S_WR                 [5]          uses=- defs=REG[3]  REG[3]
+  5 S_WR             S_WR                 [6]          uses=- defs=REG[17]  REG[17]
+  6 VREG_LD          VREG_LD(fill+spu)    [7-9]        uses=- defs=VRF[13][0],VRF[5][0]
+  7 S_WR             S_WR                 [10]         uses=- defs=REG[1]  REG[1]
+  8 S_WR             S_WR                 [11]         uses=- defs=REG[2]  REG[2]
+  9 S_WR             S_WR                 [12]         uses=- defs=REG[3]  REG[3]
+ 10 VREG_LD          VREG_LD(fill)        [13-14]      uses=- defs=VRF[7][0]
+ 11 VREG_LD          VREG_LD(fill)        [15-16]      uses=- defs=VRF[9][0]
+ 12 DRAM_LOAD        DRAM_LOAD            [17-18]      uses=DRAM[0x0] defs=VRF[5][0]  DRAM[0x0]
+ 13 VREG_MOVE        VREG_MOVE            [19-20]      uses=VRF[5][0] defs=VRF[8][0]
+    <- [12 DRAM_LOAD] via VRF[5][0]
+    <- [12 DRAM_LOAD] via ('pipe',)
+ 14 MAT_LOAD         MAT_LOAD             [21-22]      uses=DRAM[0x1c] defs=MRF  DRAM[0x1c]
+ 15 VREG_MOVE        VREG_MOVE            [23-24]      uses=VRF[8][0] defs=VRF[5][0]
+    <- [13 VREG_MOVE] via VRF[8][0]
+    <- [13 VREG_MOVE] via ('pipe',)
+ 16 MV_MUL           MV_MUL               [25-27]      uses=VRF[5][0],MRF defs=VRF[7][0]
+    <- [14 MAT_LOAD] via MRF
+    <- [15 VREG_MOVE] via VRF[5][0]
+    <- [15 VREG_MOVE] via ('pipe',)
+ 17 MAT_LOAD         MAT_LOAD             [28-29]      uses=DRAM[0x24] defs=MRF  DRAM[0x24]
+ 18 VREG_MOVE        VREG_MOVE            [30-31]      uses=VRF[8][0] defs=VRF[5][0]
+    <- [13 VREG_MOVE] via VRF[8][0]
+    <- [16 MV_MUL] via ('pipe',)
+ 19 MV_MUL           MV_MUL               [32-34]      uses=VRF[5][0],MRF defs=VRF[9][0]
+    <- [17 MAT_LOAD] via MRF
+    <- [18 VREG_MOVE] via VRF[5][0]
+    <- [18 VREG_MOVE] via ('pipe',)
+ 20 DRAM_LOAD        DRAM_LOAD            [35-36]      uses=DRAM[0x2] defs=VRF[5][0]  DRAM[0x2]
+ 21 VREG_MOVE        VREG_MOVE            [37-38]      uses=VRF[5][0] defs=VRF[8][0]
+    <- [20 DRAM_LOAD] via VRF[5][0]
+    <- [20 DRAM_LOAD] via ('pipe',)
+ 22 MAT_LOAD         MAT_LOAD             [39-40]      uses=DRAM[0x20] defs=MRF  DRAM[0x20]
+ 23 VREG_MOVE        VREG_MOVE            [41-42]      uses=VRF[8][0] defs=VRF[5][0]
+    <- [21 VREG_MOVE] via VRF[8][0]
+    <- [21 VREG_MOVE] via ('pipe',)
+ 24 MV_MUL           MV_MUL               [43-45]      uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [22 MAT_LOAD] via MRF
+    <- [23 VREG_MOVE] via VRF[5][0]
+    <- [23 VREG_MOVE] via ('pipe',)
+ 25 VV_BINOP         VV_ADD               [46-49]      uses=VRF[7][0],VRF[1][0] defs=VRF[7][0]
+    <- [16 MV_MUL] via VRF[7][0]
+    <- [24 MV_MUL] via VRF[1][0]
+    <- [24 MV_MUL] via ('pipe',)
+ 26 MAT_LOAD         MAT_LOAD             [50-51]      uses=DRAM[0x28] defs=MRF  DRAM[0x28]
+ 27 VREG_MOVE        VREG_MOVE            [52-53]      uses=VRF[8][0] defs=VRF[5][0]
+    <- [21 VREG_MOVE] via VRF[8][0]
+    <- [25 VV_ADD] via ('pipe',)
+ 28 MV_MUL           MV_MUL               [54-56]      uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [26 MAT_LOAD] via MRF
+    <- [27 VREG_MOVE] via VRF[5][0]
+    <- [27 VREG_MOVE] via ('pipe',)
+ 29 VV_BINOP         VV_ADD               [57-60]      uses=VRF[9][0],VRF[1][0] defs=VRF[9][0]
+    <- [19 MV_MUL] via VRF[9][0]
+    <- [28 MV_MUL] via VRF[1][0]
+    <- [28 MV_MUL] via ('pipe',)
+ 30 VV_BINOP         VV_ADD               [61-64]      uses=VRF[7][0],DRAM[0x2c] defs=VRF[7][0]
+    <- [25 VV_ADD] via VRF[7][0]
+    <- [29 VV_ADD] via ('pipe',)
+ 31 VV_BINOP         VV_ADD               [65-68]      uses=VRF[9][0],DRAM[0x2e] defs=VRF[9][0]
+    <- [29 VV_ADD] via VRF[9][0]
+    <- [30 VV_ADD] via ('pipe',)
+ 32 VREG_MOVE        VREG_MOVE            [69-70]      uses=VRF[9][0] defs=VRF[8][0]
+    <- [31 VV_ADD] via VRF[9][0]
+    <- [31 VV_ADD] via ('pipe',)
+ 33 VREG_MOVE        VREG_MOVE            [71-72]      uses=VRF[7][0] defs=VRF[6][0]
+    <- [30 VV_ADD] via VRF[7][0]
+    <- [32 VREG_MOVE] via ('pipe',)
+ 34 VREG_MOVE        VREG_MOVE            [73-74]      uses=VRF[8][0] defs=VRF[6][2]
+    <- [32 VREG_MOVE] via VRF[8][0]
+    <- [33 VREG_MOVE] via ('pipe',)
+ 35 S_WR             S_WR                 [75]         uses=- defs=REG[1]  REG[1]
+ 36 S_WR             S_WR                 [76]         uses=- defs=REG[2]  REG[2]
+ 37 S_WR             S_WR                 [77]         uses=- defs=REG[3]  REG[3]
+ 38 VREG_LD          VREG_LD(fill)        [78-79]      uses=- defs=VRF[7][0]
+ 39 VREG_LD          VREG_LD(fill)        [80-81]      uses=- defs=VRF[9][0]
+ 40 DRAM_LOAD        DRAM_LOAD            [82-83]      uses=DRAM[0x0] defs=VRF[5][0]  DRAM[0x0]
+ 41 VREG_MOVE        VREG_MOVE            [84-85]      uses=VRF[5][0] defs=VRF[8][0]
+    <- [40 DRAM_LOAD] via VRF[5][0]
+    <- [40 DRAM_LOAD] via ('pipe',)
+ 42 MAT_LOAD         MAT_LOAD             [86-87]      uses=DRAM[0x30] defs=MRF  DRAM[0x30]
+ 43 VREG_MOVE        VREG_MOVE            [88-89]      uses=VRF[8][0] defs=VRF[5][0]
+    <- [41 VREG_MOVE] via VRF[8][0]
+    <- [41 VREG_MOVE] via ('pipe',)
+ 44 MV_MUL           MV_MUL               [90-92]      uses=VRF[5][0],MRF defs=VRF[7][0]
+    <- [42 MAT_LOAD] via MRF
+    <- [43 VREG_MOVE] via VRF[5][0]
+    <- [43 VREG_MOVE] via ('pipe',)
+ 45 MAT_LOAD         MAT_LOAD             [93-94]      uses=DRAM[0x38] defs=MRF  DRAM[0x38]
+ 46 VREG_MOVE        VREG_MOVE            [95-96]      uses=VRF[8][0] defs=VRF[5][0]
+    <- [41 VREG_MOVE] via VRF[8][0]
+    <- [44 MV_MUL] via ('pipe',)
+ 47 MV_MUL           MV_MUL               [97-99]      uses=VRF[5][0],MRF defs=VRF[9][0]
+    <- [45 MAT_LOAD] via MRF
+    <- [46 VREG_MOVE] via VRF[5][0]
+    <- [46 VREG_MOVE] via ('pipe',)
+ 48 DRAM_LOAD        DRAM_LOAD            [100-101]    uses=DRAM[0x2] defs=VRF[5][0]  DRAM[0x2]
+ 49 VREG_MOVE        VREG_MOVE            [102-103]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [48 DRAM_LOAD] via VRF[5][0]
+    <- [48 DRAM_LOAD] via ('pipe',)
+ 50 MAT_LOAD         MAT_LOAD             [104-105]    uses=DRAM[0x34] defs=MRF  DRAM[0x34]
+ 51 VREG_MOVE        VREG_MOVE            [106-107]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [49 VREG_MOVE] via VRF[8][0]
+    <- [49 VREG_MOVE] via ('pipe',)
+ 52 MV_MUL           MV_MUL               [108-110]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [50 MAT_LOAD] via MRF
+    <- [51 VREG_MOVE] via VRF[5][0]
+    <- [51 VREG_MOVE] via ('pipe',)
+ 53 VV_BINOP         VV_ADD               [111-114]    uses=VRF[7][0],VRF[1][0] defs=VRF[7][0]
+    <- [44 MV_MUL] via VRF[7][0]
+    <- [52 MV_MUL] via VRF[1][0]
+    <- [52 MV_MUL] via ('pipe',)
+ 54 MAT_LOAD         MAT_LOAD             [115-116]    uses=DRAM[0x3c] defs=MRF  DRAM[0x3c]
+ 55 VREG_MOVE        VREG_MOVE            [117-118]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [49 VREG_MOVE] via VRF[8][0]
+    <- [53 VV_ADD] via ('pipe',)
+ 56 MV_MUL           MV_MUL               [119-121]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [54 MAT_LOAD] via MRF
+    <- [55 VREG_MOVE] via VRF[5][0]
+    <- [55 VREG_MOVE] via ('pipe',)
+ 57 VV_BINOP         VV_ADD               [122-125]    uses=VRF[9][0],VRF[1][0] defs=VRF[9][0]
+    <- [47 MV_MUL] via VRF[9][0]
+    <- [56 MV_MUL] via VRF[1][0]
+    <- [56 MV_MUL] via ('pipe',)
+ 58 VV_BINOP         VV_ADD               [126-129]    uses=VRF[7][0],DRAM[0x40] defs=VRF[7][0]
+    <- [53 VV_ADD] via VRF[7][0]
+    <- [57 VV_ADD] via ('pipe',)
+ 59 VV_BINOP         VV_ADD               [130-133]    uses=VRF[9][0],DRAM[0x42] defs=VRF[9][0]
+    <- [57 VV_ADD] via VRF[9][0]
+    <- [58 VV_ADD] via ('pipe',)
+ 60 VREG_MOVE        VREG_MOVE            [134-135]    uses=VRF[9][0] defs=VRF[8][0]
+    <- [59 VV_ADD] via VRF[9][0]
+    <- [59 VV_ADD] via ('pipe',)
+ 61 VREG_MOVE        VREG_MOVE            [136-137]    uses=VRF[7][0] defs=VRF[6][4]
+    <- [58 VV_ADD] via VRF[7][0]
+    <- [60 VREG_MOVE] via ('pipe',)
+ 62 VREG_MOVE        VREG_MOVE            [138-139]    uses=VRF[8][0] defs=VRF[6][6]
+    <- [60 VREG_MOVE] via VRF[8][0]
+    <- [61 VREG_MOVE] via ('pipe',)
+ 63 S_WR             S_WR                 [140]        uses=- defs=REG[1]  REG[1]
+ 64 S_WR             S_WR                 [141]        uses=- defs=REG[2]  REG[2]
+ 65 S_WR             S_WR                 [142]        uses=- defs=REG[3]  REG[3]
+ 66 VREG_LD          VREG_LD(fill)        [143-144]    uses=- defs=VRF[7][0]
+ 67 VREG_LD          VREG_LD(fill)        [145-146]    uses=- defs=VRF[9][0]
+ 68 DRAM_LOAD        DRAM_LOAD            [147-148]    uses=DRAM[0x0] defs=VRF[5][0]  DRAM[0x0]
+ 69 VREG_MOVE        VREG_MOVE            [149-150]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [68 DRAM_LOAD] via VRF[5][0]
+    <- [68 DRAM_LOAD] via ('pipe',)
+ 70 MAT_LOAD         MAT_LOAD             [151-152]    uses=DRAM[0x8] defs=MRF  DRAM[0x8]
+ 71 VREG_MOVE        VREG_MOVE            [153-154]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [69 VREG_MOVE] via VRF[8][0]
+    <- [69 VREG_MOVE] via ('pipe',)
+ 72 MV_MUL           MV_MUL               [155-157]    uses=VRF[5][0],MRF defs=VRF[7][0]
+    <- [70 MAT_LOAD] via MRF
+    <- [71 VREG_MOVE] via VRF[5][0]
+    <- [71 VREG_MOVE] via ('pipe',)
+ 73 MAT_LOAD         MAT_LOAD             [158-159]    uses=DRAM[0x10] defs=MRF  DRAM[0x10]
+ 74 VREG_MOVE        VREG_MOVE            [160-161]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [69 VREG_MOVE] via VRF[8][0]
+    <- [72 MV_MUL] via ('pipe',)
+ 75 MV_MUL           MV_MUL               [162-164]    uses=VRF[5][0],MRF defs=VRF[9][0]
+    <- [73 MAT_LOAD] via MRF
+    <- [74 VREG_MOVE] via VRF[5][0]
+    <- [74 VREG_MOVE] via ('pipe',)
+ 76 DRAM_LOAD        DRAM_LOAD            [165-166]    uses=DRAM[0x2] defs=VRF[5][0]  DRAM[0x2]
+ 77 VREG_MOVE        VREG_MOVE            [167-168]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [76 DRAM_LOAD] via VRF[5][0]
+    <- [76 DRAM_LOAD] via ('pipe',)
+ 78 MAT_LOAD         MAT_LOAD             [169-170]    uses=DRAM[0xc] defs=MRF  DRAM[0xc]
+ 79 VREG_MOVE        VREG_MOVE            [171-172]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [77 VREG_MOVE] via VRF[8][0]
+    <- [77 VREG_MOVE] via ('pipe',)
+ 80 MV_MUL           MV_MUL               [173-175]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [78 MAT_LOAD] via MRF
+    <- [79 VREG_MOVE] via VRF[5][0]
+    <- [79 VREG_MOVE] via ('pipe',)
+ 81 VV_BINOP         VV_ADD               [176-179]    uses=VRF[7][0],VRF[1][0] defs=VRF[7][0]
+    <- [72 MV_MUL] via VRF[7][0]
+    <- [80 MV_MUL] via VRF[1][0]
+    <- [80 MV_MUL] via ('pipe',)
+ 82 MAT_LOAD         MAT_LOAD             [180-181]    uses=DRAM[0x14] defs=MRF  DRAM[0x14]
+ 83 VREG_MOVE        VREG_MOVE            [182-183]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [77 VREG_MOVE] via VRF[8][0]
+    <- [81 VV_ADD] via ('pipe',)
+ 84 MV_MUL           MV_MUL               [184-186]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [82 MAT_LOAD] via MRF
+    <- [83 VREG_MOVE] via VRF[5][0]
+    <- [83 VREG_MOVE] via ('pipe',)
+ 85 VV_BINOP         VV_ADD               [187-190]    uses=VRF[9][0],VRF[1][0] defs=VRF[9][0]
+    <- [75 MV_MUL] via VRF[9][0]
+    <- [84 MV_MUL] via VRF[1][0]
+    <- [84 MV_MUL] via ('pipe',)
+ 86 VV_BINOP         VV_ADD               [191-194]    uses=VRF[7][0],DRAM[0x18] defs=VRF[7][0]
+    <- [81 VV_ADD] via VRF[7][0]
+    <- [85 VV_ADD] via ('pipe',)
+ 87 VV_BINOP         VV_ADD               [195-198]    uses=VRF[9][0],DRAM[0x1a] defs=VRF[9][0]
+    <- [85 VV_ADD] via VRF[9][0]
+    <- [86 VV_ADD] via ('pipe',)
+ 88 VREG_MOVE        VREG_MOVE            [199-200]    uses=VRF[9][0] defs=VRF[8][0]
+    <- [87 VV_ADD] via VRF[9][0]
+    <- [87 VV_ADD] via ('pipe',)
+ 89 S_WR             S_WR                 [201]        uses=- defs=REG[15]  REG[15]
+ 90 VREG_MOVE        VREG_MOVE            [202-203]    uses=VRF[6][0] defs=VRF[18][0]
+    <- [33 VREG_MOVE] via VRF[6][0]
+    <- [88 VREG_MOVE] via ('pipe',)
+ 91 VREG_LD          VREG_LD(fill)        [204-205]    uses=- defs=VRF[18][0]
+ 92 M_RD             M_RD                 [206]        uses=VRF[18][0] defs=MRF
+    <- [91 VREG_LD(fill)] via VRF[18][0]
+    <- [91 VREG_LD(fill)] via ('pipe',)
+ 93 S_WR             S_WR                 [207]        uses=- defs=REG[15]  REG[15]
+ 94 VREG_MOVE        VREG_MOVE            [208-209]    uses=VRF[7][0] defs=VRF[5][0]
+    <- [86 VV_ADD] via VRF[7][0]
+    <- [92 M_RD] via ('pipe',)
+ 95 MV_MUL           MV_MUL               [210-211]    uses=VRF[5][0],MRF defs=-
+    <- [92 M_RD] via MRF
+    <- [94 VREG_MOVE] via VRF[5][0]
+    <- [94 VREG_MOVE] via ('pipe',)
+ 96 S_WR             S_WR                 [212]        uses=- defs=REG[15]  REG[15]
+ 97 SOFTMAX          V_FUNC/SOFTMAX       [213]        uses=- defs=-
+    <- [95 MV_MUL] via ('pipe',)
+ 98 DRAM_STORE       DRAM_STORE           [214]        uses=- defs=DRAM[0x500]  DRAM[0x500]
+    <- [97 V_FUNC/SOFTMAX] via ('pipe',)
+ 99 VREG_LD          VREG_LD(fill)        [215-216]    uses=- defs=VRF[7][0]
+100 S_WR             S_WR                 [217]        uses=- defs=REG[15]  REG[15]
+101 VREG_MOVE        VREG_MOVE            [218-219]    uses=VRF[6][4] defs=VRF[18][0]
+    <- [61 VREG_MOVE] via VRF[6][4]
+    <- [99 VREG_LD(fill)] via ('pipe',)
+102 VREG_LD          VREG_LD(fill)        [220-221]    uses=- defs=VRF[18][0]
+103 S_WR             S_WR                 [222]        uses=- defs=REG[15]  REG[15]
+104 M_RD             M_RD                 [223]        uses=VRF[18][0] defs=MRF
+    <- [102 VREG_LD(fill)] via VRF[18][0]
+    <- [102 VREG_LD(fill)] via ('pipe',)
+105 DRAM_LOAD        DRAM_LOAD            [224-225]    uses=DRAM[0x900] defs=VRF[5][0]  DRAM[0x900]
+106 MV_MUL           MV_MUL               [226-228]    uses=VRF[5][0],MRF defs=VRF[18][0]
+    <- [104 M_RD] via MRF
+    <- [105 DRAM_LOAD] via VRF[5][0]
+    <- [105 DRAM_LOAD] via ('pipe',)
+107 DRAM_LOAD        DRAM_LOAD            [229-230]    uses=DRAM[0x902] defs=VRF[5][0]  DRAM[0x902]
+108 MV_MUL           MV_MUL               [231-233]    uses=VRF[5][0],MRF defs=VRF[18][0]
+    <- [104 M_RD] via MRF
+    <- [107 DRAM_LOAD] via VRF[5][0]
+    <- [107 DRAM_LOAD] via ('pipe',)
+109 M_RD             M_RD                 [234]        uses=VRF[18][0] defs=MRF
+    <- [108 MV_MUL] via VRF[18][0]
+    <- [108 MV_MUL] via ('pipe',)
+110 DRAM_LOAD        DRAM_LOAD            [235-236]    uses=DRAM[0x500] defs=VRF[5][0]  DRAM[0x500]
+    <- [98 DRAM_STORE] via DRAM[0x500]
+111 MV_MUL           MV_MUL               [237-238]    uses=VRF[5][0],MRF defs=-
+    <- [109 M_RD] via MRF
+    <- [110 DRAM_LOAD] via VRF[5][0]
+    <- [110 DRAM_LOAD] via ('pipe',)
+112 S_WR             S_WR                 [239]        uses=- defs=REG[16]  REG[16]
+113 V_WR             V_WR                 [240]        uses=- defs=VRF[7][0]
+    <- [111 MV_MUL] via ('pipe',)
+114 S_WR             S_WR                 [241]        uses=- defs=REG[15]  REG[15]
+115 VREG_MOVE        VREG_MOVE            [242-243]    uses=VRF[6][2] defs=VRF[18][0]
+    <- [34 VREG_MOVE] via VRF[6][2]
+    <- [113 V_WR] via ('pipe',)
+116 VREG_LD          VREG_LD(fill)        [244-245]    uses=- defs=VRF[18][0]
+117 M_RD             M_RD                 [246]        uses=VRF[18][0] defs=MRF
+    <- [116 VREG_LD(fill)] via VRF[18][0]
+    <- [116 VREG_LD(fill)] via ('pipe',)
+118 S_WR             S_WR                 [247]        uses=- defs=REG[15]  REG[15]
+119 VREG_MOVE        VREG_MOVE            [248-249]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [88 VREG_MOVE] via VRF[8][0]
+    <- [117 M_RD] via ('pipe',)
+120 MV_MUL           MV_MUL               [250-251]    uses=VRF[5][0],MRF defs=-
+    <- [117 M_RD] via MRF
+    <- [119 VREG_MOVE] via VRF[5][0]
+    <- [119 VREG_MOVE] via ('pipe',)
+121 S_WR             S_WR                 [252]        uses=- defs=REG[15]  REG[15]
+122 SOFTMAX          V_FUNC/SOFTMAX       [253]        uses=- defs=-
+    <- [120 MV_MUL] via ('pipe',)
+123 DRAM_STORE       DRAM_STORE           [254]        uses=- defs=DRAM[0x500]  DRAM[0x500]
+    <- [122 V_FUNC/SOFTMAX] via ('pipe',)
+124 VREG_LD          VREG_LD(fill)        [255-256]    uses=- defs=VRF[8][0]
+125 S_WR             S_WR                 [257]        uses=- defs=REG[15]  REG[15]
+126 VREG_MOVE        VREG_MOVE            [258-259]    uses=VRF[6][6] defs=VRF[18][0]
+    <- [62 VREG_MOVE] via VRF[6][6]
+    <- [124 VREG_LD(fill)] via ('pipe',)
+127 VREG_LD          VREG_LD(fill)        [260-261]    uses=- defs=VRF[18][0]
+128 S_WR             S_WR                 [262]        uses=- defs=REG[15]  REG[15]
+129 M_RD             M_RD                 [263]        uses=VRF[18][0] defs=MRF
+    <- [127 VREG_LD(fill)] via VRF[18][0]
+    <- [127 VREG_LD(fill)] via ('pipe',)
+130 DRAM_LOAD        DRAM_LOAD            [264-265]    uses=DRAM[0x900] defs=VRF[5][0]  DRAM[0x900]
+131 MV_MUL           MV_MUL               [266-268]    uses=VRF[5][0],MRF defs=VRF[18][0]
+    <- [129 M_RD] via MRF
+    <- [130 DRAM_LOAD] via VRF[5][0]
+    <- [130 DRAM_LOAD] via ('pipe',)
+132 DRAM_LOAD        DRAM_LOAD            [269-270]    uses=DRAM[0x902] defs=VRF[5][0]  DRAM[0x902]
+133 MV_MUL           MV_MUL               [271-273]    uses=VRF[5][0],MRF defs=VRF[18][0]
+    <- [129 M_RD] via MRF
+    <- [132 DRAM_LOAD] via VRF[5][0]
+    <- [132 DRAM_LOAD] via ('pipe',)
+134 M_RD             M_RD                 [274]        uses=VRF[18][0] defs=MRF
+    <- [133 MV_MUL] via VRF[18][0]
+    <- [133 MV_MUL] via ('pipe',)
+135 DRAM_LOAD        DRAM_LOAD            [275-276]    uses=DRAM[0x500] defs=VRF[5][0]  DRAM[0x500]
+    <- [123 DRAM_STORE] via DRAM[0x500]
+136 MV_MUL           MV_MUL               [277-278]    uses=VRF[5][0],MRF defs=-
+    <- [134 M_RD] via MRF
+    <- [135 DRAM_LOAD] via VRF[5][0]
+    <- [135 DRAM_LOAD] via ('pipe',)
+137 S_WR             S_WR                 [279]        uses=- defs=REG[16]  REG[16]
+138 V_WR             V_WR                 [280]        uses=- defs=VRF[8][0]
+    <- [136 MV_MUL] via ('pipe',)
+139 VREG_MOVE        VREG_MOVE            [281-282]    uses=VRF[7][0] defs=VRF[6][8]
+    <- [113 V_WR] via VRF[7][0]
+    <- [138 V_WR] via ('pipe',)
+140 VREG_MOVE        VREG_MOVE            [283-284]    uses=VRF[8][0] defs=VRF[6][10]
+    <- [138 V_WR] via VRF[8][0]
+    <- [139 VREG_MOVE] via ('pipe',)
+141 S_WR             S_WR                 [285]        uses=- defs=REG[1]  REG[1]
+142 S_WR             S_WR                 [286]        uses=- defs=REG[2]  REG[2]
+143 S_WR             S_WR                 [287]        uses=- defs=REG[3]  REG[3]
+144 VREG_LD          VREG_LD(fill)        [288-289]    uses=- defs=VRF[7][0]
+145 VREG_LD          VREG_LD(fill)        [290-291]    uses=- defs=VRF[9][0]
+146 VREG_MOVE        VREG_MOVE            [292-293]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [138 V_WR] via VRF[8][0]
+    <- [145 VREG_LD(fill)] via ('pipe',)
+147 VREG_MOVE        VREG_MOVE            [294-295]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [146 VREG_MOVE] via VRF[5][0]
+    <- [146 VREG_MOVE] via ('pipe',)
+148 MAT_LOAD         MAT_LOAD             [296-297]    uses=DRAM[0x44] defs=MRF  DRAM[0x44]
+149 VREG_MOVE        VREG_MOVE            [298-299]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [147 VREG_MOVE] via VRF[8][0]
+    <- [147 VREG_MOVE] via ('pipe',)
+150 MV_MUL           MV_MUL               [300-302]    uses=VRF[5][0],MRF defs=VRF[7][0]
+    <- [148 MAT_LOAD] via MRF
+    <- [149 VREG_MOVE] via VRF[5][0]
+    <- [149 VREG_MOVE] via ('pipe',)
+151 MAT_LOAD         MAT_LOAD             [303-304]    uses=DRAM[0x4c] defs=MRF  DRAM[0x4c]
+152 VREG_MOVE        VREG_MOVE            [305-306]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [147 VREG_MOVE] via VRF[8][0]
+    <- [150 MV_MUL] via ('pipe',)
+153 MV_MUL           MV_MUL               [307-309]    uses=VRF[5][0],MRF defs=VRF[9][0]
+    <- [151 MAT_LOAD] via MRF
+    <- [152 VREG_MOVE] via VRF[5][0]
+    <- [152 VREG_MOVE] via ('pipe',)
+154 VREG_MOVE        VREG_MOVE            [310-311]    uses=VRF[10][0] defs=VRF[5][0]
+    <- [153 MV_MUL] via ('pipe',)
+155 VREG_MOVE        VREG_MOVE            [312-313]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [154 VREG_MOVE] via VRF[5][0]
+    <- [154 VREG_MOVE] via ('pipe',)
+156 MAT_LOAD         MAT_LOAD             [314-315]    uses=DRAM[0x48] defs=MRF  DRAM[0x48]
+157 VREG_MOVE        VREG_MOVE            [316-317]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [155 VREG_MOVE] via VRF[8][0]
+    <- [155 VREG_MOVE] via ('pipe',)
+158 MV_MUL           MV_MUL               [318-320]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [156 MAT_LOAD] via MRF
+    <- [157 VREG_MOVE] via VRF[5][0]
+    <- [157 VREG_MOVE] via ('pipe',)
+159 VV_BINOP         VV_ADD               [321-324]    uses=VRF[7][0],VRF[1][0] defs=VRF[7][0]
+    <- [150 MV_MUL] via VRF[7][0]
+    <- [158 MV_MUL] via VRF[1][0]
+    <- [158 MV_MUL] via ('pipe',)
+160 MAT_LOAD         MAT_LOAD             [325-326]    uses=DRAM[0x50] defs=MRF  DRAM[0x50]
+161 VREG_MOVE        VREG_MOVE            [327-328]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [155 VREG_MOVE] via VRF[8][0]
+    <- [159 VV_ADD] via ('pipe',)
+162 MV_MUL           MV_MUL               [329-331]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [160 MAT_LOAD] via MRF
+    <- [161 VREG_MOVE] via VRF[5][0]
+    <- [161 VREG_MOVE] via ('pipe',)
+163 VV_BINOP         VV_ADD               [332-335]    uses=VRF[9][0],VRF[1][0] defs=VRF[9][0]
+    <- [153 MV_MUL] via VRF[9][0]
+    <- [162 MV_MUL] via VRF[1][0]
+    <- [162 MV_MUL] via ('pipe',)
+164 VV_BINOP         VV_ADD               [336-339]    uses=VRF[7][0],DRAM[0x54] defs=VRF[7][0]
+    <- [159 VV_ADD] via VRF[7][0]
+    <- [163 VV_ADD] via ('pipe',)
+165 VV_BINOP         VV_ADD               [340-343]    uses=VRF[9][0],DRAM[0x56] defs=VRF[9][0]
+    <- [163 VV_ADD] via VRF[9][0]
+    <- [164 VV_ADD] via ('pipe',)
+166 VREG_MOVE        VREG_MOVE            [344-345]    uses=VRF[9][0] defs=VRF[8][0]
+    <- [165 VV_ADD] via VRF[9][0]
+    <- [165 VV_ADD] via ('pipe',)
+167 VREG_MOVE        VREG_MOVE            [346-347]    uses=VRF[7][0] defs=VRF[6][8]
+    <- [164 VV_ADD] via VRF[7][0]
+    <- [166 VREG_MOVE] via ('pipe',)
+168 VREG_MOVE        VREG_MOVE            [348-349]    uses=VRF[8][0] defs=VRF[6][10]
+    <- [166 VREG_MOVE] via VRF[8][0]
+    <- [167 VREG_MOVE] via ('pipe',)
+169 DRAM_LOAD        DRAM_LOAD            [350-351]    uses=DRAM[0x0] defs=VRF[7][0]  DRAM[0x0]
+170 DRAM_LOAD        DRAM_LOAD            [352-353]    uses=DRAM[0x2] defs=VRF[8][0]  DRAM[0x2]
+171 DRAM_STORE       DRAM_STORE           [354-355]    uses=VRF[7][0] defs=DRAM[0x700]  DRAM[0x700]
+    <- [169 DRAM_LOAD] via VRF[7][0]
+    <- [170 DRAM_LOAD] via ('pipe',)
+172 DRAM_STORE       DRAM_STORE           [356-357]    uses=VRF[8][0] defs=DRAM[0x708]  DRAM[0x708]
+    <- [170 DRAM_LOAD] via VRF[8][0]
+    <- [170 DRAM_LOAD] via ('pipe',)
+173 VV_BINOP         VV_ADD               [358-361]    uses=VRF[6][8],VRF[7][0] defs=VRF[7][0]
+    <- [167 VREG_MOVE] via VRF[6][8]
+    <- [169 DRAM_LOAD] via VRF[7][0]
+    <- [170 DRAM_LOAD] via ('pipe',)
+174 VV_BINOP         VV_ADD               [362-365]    uses=VRF[6][10],VRF[8][0] defs=VRF[8][0]
+    <- [168 VREG_MOVE] via VRF[6][10]
+    <- [170 DRAM_LOAD] via VRF[8][0]
+    <- [173 VV_ADD] via ('pipe',)
+175 DRAM_STORE       DRAM_STORE           [366-367]    uses=VRF[7][0] defs=DRAM[0x500]  DRAM[0x500]
+    <- [173 VV_ADD] via VRF[7][0]
+    <- [174 VV_ADD] via ('pipe',)
+176 DRAM_LOAD        DRAM_LOAD            [368-369]    uses=DRAM[0x80] defs=VRF[5][0]  DRAM[0x80]
+177 DRAM_LOAD        DRAM_LOAD            [370-371]    uses=DRAM[0x90] defs=VRF[7][0]  DRAM[0x90]
+178 DRAM_LOAD        DRAM_LOAD            [372]        uses=DRAM[0x500] defs=-  DRAM[0x500]
+    <- [175 DRAM_STORE] via DRAM[0x500]
+179 LAYERNORM        V_FUNC/LAYERNORM     [373-374]    uses=VRF[5][0],VRF[7][0] defs=VRF[7][0]
+    <- [176 DRAM_LOAD] via VRF[5][0]
+    <- [177 DRAM_LOAD] via VRF[7][0]
+    <- [178 DRAM_LOAD] via ('pipe',)
+180 DRAM_STORE       DRAM_STORE           [375]        uses=- defs=DRAM[0x510]  DRAM[0x510]
+    <- [179 V_FUNC/LAYERNORM] via ('pipe',)
+181 DRAM_STORE       DRAM_STORE           [376-377]    uses=VRF[8][0] defs=DRAM[0x508]  DRAM[0x508]
+    <- [174 VV_ADD] via VRF[8][0]
+    <- [179 V_FUNC/LAYERNORM] via ('pipe',)
+182 DRAM_LOAD        DRAM_LOAD            [378-379]    uses=DRAM[0x88] defs=VRF[5][0]  DRAM[0x88]
+183 DRAM_LOAD        DRAM_LOAD            [380-381]    uses=DRAM[0x98] defs=VRF[7][0]  DRAM[0x98]
+184 DRAM_LOAD        DRAM_LOAD            [382]        uses=DRAM[0x508] defs=-  DRAM[0x508]
+    <- [181 DRAM_STORE] via DRAM[0x508]
+185 LAYERNORM        V_FUNC/LAYERNORM     [383-384]    uses=VRF[5][0],VRF[7][0] defs=VRF[8][0]
+    <- [182 DRAM_LOAD] via VRF[5][0]
+    <- [183 DRAM_LOAD] via VRF[7][0]
+    <- [184 DRAM_LOAD] via ('pipe',)
+186 DRAM_LOAD        DRAM_LOAD            [385-386]    uses=DRAM[0x510] defs=VRF[7][0]  DRAM[0x510]
+    <- [180 DRAM_STORE] via DRAM[0x510]
+187 VREG_MOVE        VREG_MOVE            [387-388]    uses=VRF[7][0] defs=VRF[6][8]
+    <- [186 DRAM_LOAD] via VRF[7][0]
+    <- [186 DRAM_LOAD] via ('pipe',)
+188 VREG_MOVE        VREG_MOVE            [389-390]    uses=VRF[8][0] defs=VRF[6][10]
+    <- [185 V_FUNC/LAYERNORM] via VRF[8][0]
+    <- [187 VREG_MOVE] via ('pipe',)
+189 S_WR             S_WR                 [391]        uses=- defs=REG[1]  REG[1]
+190 S_WR             S_WR                 [392]        uses=- defs=REG[2]  REG[2]
+191 S_WR             S_WR                 [393]        uses=- defs=REG[3]  REG[3]
+192 VREG_LD          VREG_LD(fill)        [394-395]    uses=- defs=VRF[7][0]
+193 VREG_LD          VREG_LD(fill)        [396-397]    uses=- defs=VRF[9][0]
+194 VREG_MOVE        VREG_MOVE            [398-399]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [185 V_FUNC/LAYERNORM] via VRF[8][0]
+    <- [193 VREG_LD(fill)] via ('pipe',)
+195 VREG_MOVE        VREG_MOVE            [400-401]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [194 VREG_MOVE] via VRF[5][0]
+    <- [194 VREG_MOVE] via ('pipe',)
+196 MAT_LOAD         MAT_LOAD             [402-403]    uses=DRAM[0x58] defs=MRF  DRAM[0x58]
+197 VREG_MOVE        VREG_MOVE            [404-405]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [195 VREG_MOVE] via VRF[8][0]
+    <- [195 VREG_MOVE] via ('pipe',)
+198 MV_MUL           MV_MUL               [406-408]    uses=VRF[5][0],MRF defs=VRF[7][0]
+    <- [196 MAT_LOAD] via MRF
+    <- [197 VREG_MOVE] via VRF[5][0]
+    <- [197 VREG_MOVE] via ('pipe',)
+199 MAT_LOAD         MAT_LOAD             [409-410]    uses=DRAM[0x60] defs=MRF  DRAM[0x60]
+200 VREG_MOVE        VREG_MOVE            [411-412]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [195 VREG_MOVE] via VRF[8][0]
+    <- [198 MV_MUL] via ('pipe',)
+201 MV_MUL           MV_MUL               [413-415]    uses=VRF[5][0],MRF defs=VRF[9][0]
+    <- [199 MAT_LOAD] via MRF
+    <- [200 VREG_MOVE] via VRF[5][0]
+    <- [200 VREG_MOVE] via ('pipe',)
+202 VREG_MOVE        VREG_MOVE            [416-417]    uses=VRF[10][0] defs=VRF[5][0]
+    <- [201 MV_MUL] via ('pipe',)
+203 VREG_MOVE        VREG_MOVE            [418-419]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [202 VREG_MOVE] via VRF[5][0]
+    <- [202 VREG_MOVE] via ('pipe',)
+204 MAT_LOAD         MAT_LOAD             [420-421]    uses=DRAM[0x5c] defs=MRF  DRAM[0x5c]
+205 VREG_MOVE        VREG_MOVE            [422-423]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [203 VREG_MOVE] via VRF[8][0]
+    <- [203 VREG_MOVE] via ('pipe',)
+206 MV_MUL           MV_MUL               [424-426]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [204 MAT_LOAD] via MRF
+    <- [205 VREG_MOVE] via VRF[5][0]
+    <- [205 VREG_MOVE] via ('pipe',)
+207 VV_BINOP         VV_ADD               [427-430]    uses=VRF[7][0],VRF[1][0] defs=VRF[7][0]
+    <- [198 MV_MUL] via VRF[7][0]
+    <- [206 MV_MUL] via VRF[1][0]
+    <- [206 MV_MUL] via ('pipe',)
+208 MAT_LOAD         MAT_LOAD             [431-432]    uses=DRAM[0x64] defs=MRF  DRAM[0x64]
+209 VREG_MOVE        VREG_MOVE            [433-434]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [203 VREG_MOVE] via VRF[8][0]
+    <- [207 VV_ADD] via ('pipe',)
+210 MV_MUL           MV_MUL               [435-437]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [208 MAT_LOAD] via MRF
+    <- [209 VREG_MOVE] via VRF[5][0]
+    <- [209 VREG_MOVE] via ('pipe',)
+211 VV_BINOP         VV_ADD               [438-441]    uses=VRF[9][0],VRF[1][0] defs=VRF[9][0]
+    <- [201 MV_MUL] via VRF[9][0]
+    <- [210 MV_MUL] via VRF[1][0]
+    <- [210 MV_MUL] via ('pipe',)
+212 VV_BINOP         VV_ADD               [442-445]    uses=VRF[7][0],DRAM[0x68] defs=VRF[7][0]
+    <- [207 VV_ADD] via VRF[7][0]
+    <- [211 VV_ADD] via ('pipe',)
+213 VV_BINOP         VV_ADD               [446-449]    uses=VRF[9][0],DRAM[0x6a] defs=VRF[9][0]
+    <- [211 VV_ADD] via VRF[9][0]
+    <- [212 VV_ADD] via ('pipe',)
+214 VREG_MOVE        VREG_MOVE            [450-451]    uses=VRF[9][0] defs=VRF[8][0]
+    <- [213 VV_ADD] via VRF[9][0]
+    <- [213 VV_ADD] via ('pipe',)
+215 V_UNARY          V_GELU               [452-454]    uses=VRF[7][0] defs=VRF[7][0]
+    <- [212 VV_ADD] via VRF[7][0]
+    <- [214 VREG_MOVE] via ('pipe',)
+216 V_UNARY          V_GELU               [455-457]    uses=VRF[8][0] defs=VRF[8][0]
+    <- [214 VREG_MOVE] via VRF[8][0]
+    <- [215 V_GELU] via ('pipe',)
+217 VREG_MOVE        VREG_MOVE            [458-459]    uses=VRF[7][0] defs=VRF[6][8]
+    <- [215 V_GELU] via VRF[7][0]
+    <- [216 V_GELU] via ('pipe',)
+218 VREG_MOVE        VREG_MOVE            [460-461]    uses=VRF[8][0] defs=VRF[6][10]
+    <- [216 V_GELU] via VRF[8][0]
+    <- [217 VREG_MOVE] via ('pipe',)
+219 S_WR             S_WR                 [462]        uses=- defs=REG[1]  REG[1]
+220 S_WR             S_WR                 [463]        uses=- defs=REG[2]  REG[2]
+221 S_WR             S_WR                 [464]        uses=- defs=REG[3]  REG[3]
+222 VREG_LD          VREG_LD(fill)        [465-466]    uses=- defs=VRF[7][0]
+223 VREG_LD          VREG_LD(fill)        [467-468]    uses=- defs=VRF[9][0]
+224 VREG_MOVE        VREG_MOVE            [469-470]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [216 V_GELU] via VRF[8][0]
+    <- [223 VREG_LD(fill)] via ('pipe',)
+225 VREG_MOVE        VREG_MOVE            [471-472]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [224 VREG_MOVE] via VRF[5][0]
+    <- [224 VREG_MOVE] via ('pipe',)
+226 MAT_LOAD         MAT_LOAD             [473-474]    uses=DRAM[0x6c] defs=MRF  DRAM[0x6c]
+227 VREG_MOVE        VREG_MOVE            [475-476]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [225 VREG_MOVE] via VRF[8][0]
+    <- [225 VREG_MOVE] via ('pipe',)
+228 MV_MUL           MV_MUL               [477-479]    uses=VRF[5][0],MRF defs=VRF[7][0]
+    <- [226 MAT_LOAD] via MRF
+    <- [227 VREG_MOVE] via VRF[5][0]
+    <- [227 VREG_MOVE] via ('pipe',)
+229 MAT_LOAD         MAT_LOAD             [480-481]    uses=DRAM[0x74] defs=MRF  DRAM[0x74]
+230 VREG_MOVE        VREG_MOVE            [482-483]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [225 VREG_MOVE] via VRF[8][0]
+    <- [228 MV_MUL] via ('pipe',)
+231 MV_MUL           MV_MUL               [484-486]    uses=VRF[5][0],MRF defs=VRF[9][0]
+    <- [229 MAT_LOAD] via MRF
+    <- [230 VREG_MOVE] via VRF[5][0]
+    <- [230 VREG_MOVE] via ('pipe',)
+232 VREG_MOVE        VREG_MOVE            [487-488]    uses=VRF[10][0] defs=VRF[5][0]
+    <- [231 MV_MUL] via ('pipe',)
+233 VREG_MOVE        VREG_MOVE            [489-490]    uses=VRF[5][0] defs=VRF[8][0]
+    <- [232 VREG_MOVE] via VRF[5][0]
+    <- [232 VREG_MOVE] via ('pipe',)
+234 MAT_LOAD         MAT_LOAD             [491-492]    uses=DRAM[0x70] defs=MRF  DRAM[0x70]
+235 VREG_MOVE        VREG_MOVE            [493-494]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [233 VREG_MOVE] via VRF[8][0]
+    <- [233 VREG_MOVE] via ('pipe',)
+236 MV_MUL           MV_MUL               [495-497]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [234 MAT_LOAD] via MRF
+    <- [235 VREG_MOVE] via VRF[5][0]
+    <- [235 VREG_MOVE] via ('pipe',)
+237 VV_BINOP         VV_ADD               [498-501]    uses=VRF[7][0],VRF[1][0] defs=VRF[7][0]
+    <- [228 MV_MUL] via VRF[7][0]
+    <- [236 MV_MUL] via VRF[1][0]
+    <- [236 MV_MUL] via ('pipe',)
+238 MAT_LOAD         MAT_LOAD             [502-503]    uses=DRAM[0x78] defs=MRF  DRAM[0x78]
+239 VREG_MOVE        VREG_MOVE            [504-505]    uses=VRF[8][0] defs=VRF[5][0]
+    <- [233 VREG_MOVE] via VRF[8][0]
+    <- [237 VV_ADD] via ('pipe',)
+240 MV_MUL           MV_MUL               [506-508]    uses=VRF[5][0],MRF defs=VRF[1][0]
+    <- [238 MAT_LOAD] via MRF
+    <- [239 VREG_MOVE] via VRF[5][0]
+    <- [239 VREG_MOVE] via ('pipe',)
+241 VV_BINOP         VV_ADD               [509-512]    uses=VRF[9][0],VRF[1][0] defs=VRF[9][0]
+    <- [231 MV_MUL] via VRF[9][0]
+    <- [240 MV_MUL] via VRF[1][0]
+    <- [240 MV_MUL] via ('pipe',)
+242 VV_BINOP         VV_ADD               [513-516]    uses=VRF[7][0],DRAM[0x7c] defs=VRF[7][0]
+    <- [237 VV_ADD] via VRF[7][0]
+    <- [241 VV_ADD] via ('pipe',)
+243 VV_BINOP         VV_ADD               [517-520]    uses=VRF[9][0],DRAM[0x7e] defs=VRF[9][0]
+    <- [241 VV_ADD] via VRF[9][0]
+    <- [242 VV_ADD] via ('pipe',)
+244 VREG_MOVE        VREG_MOVE            [521-522]    uses=VRF[9][0] defs=VRF[8][0]
+    <- [243 VV_ADD] via VRF[9][0]
+    <- [243 VV_ADD] via ('pipe',)
+245 VV_BINOP         VV_ADD               [523-526]    uses=VRF[7][0],DRAM[0x700] defs=VRF[7][0]
+    <- [171 DRAM_STORE] via DRAM[0x700]
+    <- [242 VV_ADD] via VRF[7][0]
+    <- [244 VREG_MOVE] via ('pipe',)
+246 VV_BINOP         VV_ADD               [527-530]    uses=VRF[8][0],DRAM[0x708] defs=VRF[8][0]
+    <- [172 DRAM_STORE] via DRAM[0x708]
+    <- [244 VREG_MOVE] via VRF[8][0]
+    <- [245 VV_ADD] via ('pipe',)
+247 DRAM_STORE       DRAM_STORE           [531-532]    uses=VRF[7][0] defs=DRAM[0x500]  DRAM[0x500]
+    <- [245 VV_ADD] via VRF[7][0]
+    <- [246 VV_ADD] via ('pipe',)
+248 DRAM_LOAD        DRAM_LOAD            [533-534]    uses=DRAM[0xa0] defs=VRF[5][0]  DRAM[0xa0]
+249 DRAM_LOAD        DRAM_LOAD            [535-536]    uses=DRAM[0xb0] defs=VRF[7][0]  DRAM[0xb0]
+250 DRAM_LOAD        DRAM_LOAD            [537]        uses=DRAM[0x500] defs=-  DRAM[0x500]
+    <- [247 DRAM_STORE] via DRAM[0x500]
+251 LAYERNORM        V_FUNC/LAYERNORM     [538-539]    uses=VRF[5][0],VRF[7][0] defs=VRF[7][0]
+    <- [248 DRAM_LOAD] via VRF[5][0]
+    <- [249 DRAM_LOAD] via VRF[7][0]
+    <- [250 DRAM_LOAD] via ('pipe',)
+252 DRAM_STORE       DRAM_STORE           [540]        uses=- defs=DRAM[0x510]  DRAM[0x510]
+    <- [251 V_FUNC/LAYERNORM] via ('pipe',)
+253 DRAM_STORE       DRAM_STORE           [541-542]    uses=VRF[8][0] defs=DRAM[0x508]  DRAM[0x508]
+    <- [246 VV_ADD] via VRF[8][0]
+    <- [251 V_FUNC/LAYERNORM] via ('pipe',)
+254 DRAM_LOAD        DRAM_LOAD            [543-544]    uses=DRAM[0xa8] defs=VRF[5][0]  DRAM[0xa8]
+255 DRAM_LOAD        DRAM_LOAD            [545-546]    uses=DRAM[0xb8] defs=VRF[7][0]  DRAM[0xb8]
+256 DRAM_LOAD        DRAM_LOAD            [547]        uses=DRAM[0x508] defs=-  DRAM[0x508]
+    <- [253 DRAM_STORE] via DRAM[0x508]
+257 LAYERNORM        V_FUNC/LAYERNORM     [548-549]    uses=VRF[5][0],VRF[7][0] defs=VRF[8][0]
+    <- [254 DRAM_LOAD] via VRF[5][0]
+    <- [255 DRAM_LOAD] via VRF[7][0]
+    <- [256 DRAM_LOAD] via ('pipe',)
+258 DRAM_LOAD        DRAM_LOAD            [550-551]    uses=DRAM[0x510] defs=VRF[7][0]  DRAM[0x510]
+    <- [252 DRAM_STORE] via DRAM[0x510]
+259 DRAM_STORE       DRAM_STORE           [552-553]    uses=VRF[7][0] defs=DRAM[0x800]  DRAM[0x800]
+    <- [258 DRAM_LOAD] via VRF[7][0]
+    <- [258 DRAM_LOAD] via ('pipe',)
+260 DRAM_STORE       DRAM_STORE           [554-555]    uses=VRF[8][0] defs=DRAM[0x808]  DRAM[0x808]
+    <- [257 V_FUNC/LAYERNORM] via VRF[8][0]
+    <- [258 DRAM_LOAD] via ('pipe',)
+261 S_WR             S_WR                 [556]        uses=- defs=REG[20]  REG[20]
+
+Total: 262 micro-ops, 357 edges

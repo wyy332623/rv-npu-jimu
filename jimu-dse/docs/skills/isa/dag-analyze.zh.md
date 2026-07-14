@@ -39,8 +39,8 @@ license: MIT
 
 1. 找到 `DRAM_STORE`，根据事件索引（如 `[71-72]`）定位对应的固件代码；
 2. 找到 `DRAM_LOAD`，根据事件索引定位对应的固件代码；
-3. 两者都位于 `firmware/bert/bert_layer.c`；
-4. DRAM 地址可以表明 tensor 类型：`0x200=Q`、`0x300=K`、`0x400=V`。
+3. 根据当前工作负载定位对应的固件文件；
+4. DRAM 地址的含义取决于固件的 scratch space 布局，应查看定义映射关系的 C 宏。
 
 ### 解读流量簇
 

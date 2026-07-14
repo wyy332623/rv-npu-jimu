@@ -106,25 +106,45 @@ ls jimu-dse/results/run-*/dag_iter1/
 cat jimu-dse/results/run-*/diff_1.patch
 ```
 
+### 5. 使用不同目标和工作负载运行
+
+闭环流程与具体工作负载无关。默认目标为 BERT，也可以通过 `--workload adder` 选择 Adderboard。
+
+```bash
+# G1：在默认 BERT 工作负载上进行 DRAM 优化
+bash jimu-dse/scripts/npu_closed_loop.sh --goal dram-optimization
+
+# G2：在 BERT 上进行计算效率优化
+bash jimu-dse/scripts/npu_closed_loop.sh --goal compute-optimization --agent opencode
+
+# G3：在 BERT 上执行组合优化
+bash jimu-dse/scripts/npu_closed_loop.sh --goal combined --agent opencode
+
+# M0/G1：在 Adderboard 上执行 G1 VRF 缓存优化
+bash jimu-dse/scripts/npu_closed_loop.sh --goal dram-optimization --workload adder --agent opencode
+```
+
 ## 优化目标
 
-| 目标 | 名称 | Dim | Hidden | 技能 | 主要指标 |
-|------|------|-----|--------|------|----------|
-| **G1** | `dram-optimization` | 2 | 4 | `vrf-cache` | `total_bytes` |
-| **G2** | `compute-optimization` | 4 | 4 | `dim-optimize` | `mv_mul_count` |
-| **G3** | `combined` | 4 | 4 | `dim-optimize` + `vrf-cache` | `mv_mul_count` |
+三个标准目标分别定义在 `jimu-dse/goals/<name>/goal.sh` 中；通过 `--workload` 可以将目标应用于不同工作负载。
+
+| 目标 | 名称 | Dim（BERT） | Dim（Adder） | 技能 | 主要指标 |
+|------|------|------------|-------------|------|----------|
+| **G1** | `dram-optimization` | 2 | 4 | `vrf-cache` | `total_bytes`（DRAM） |
+| **G2** | `compute-optimization` | 4 | 4 | `dim-optimize` | `test_pass` |
+| **G3** | `combined` | 4 | 4 | `dim-optimize` + `vrf-cache` | `test_pass` |
 
 ### G1：DRAM 优化
 
-固定 dim=2，使用 VRF cache 消除 K、V、Q、Z、SO、LN 和 GELU 中间结果的 DRAM 保存-加载往返，从而减少 DRAM 字节数。
+在固定维度下使用 VRF 缓存消除保存-加载往返。对 BERT，目标包括 K、V、Q、Z、SO、LN 和 GELU 中间结果；对 Adder，重点是 context 和 score 缓存。
 
 ### G2：计算效率
 
-将固件从多 tile 投影重构为单 tile 投影，使 `NATIVE_DIM` 与 `hidden_size` 匹配。每次投影的 `MV_MUL` 从 4 次降为 1 次，seq=6 时的权重 tile 加载（`M_RD_DRAM`）从 144 次降为 36 次。
+将固件从多 tile 投影重构为单 tile 投影，使 `NATIVE_DIM` 与 `hidden_size` 匹配（特指 BERT）。每次投影的 `MV_MUL` 从 4 次降为 1 次，seq=6 时的权重 tile 加载（`M_RD_DRAM`）从 144 次降为 36 次。
 
 ### G3：组合优化
 
-在 dim=4 下同时应用两种变换：先使用 `dim-optimize` 重构为单 tile，再使用 `vrf-cache` 消除剩余 DRAM 保存-加载往返。
+同时应用两种变换：先使用 `dim-optimize` 重构为单 tile，再使用 `vrf-cache` 消除剩余 DRAM 保存-加载往返。
 
 ## 可选依赖
 

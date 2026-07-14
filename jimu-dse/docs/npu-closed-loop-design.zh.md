@@ -16,11 +16,11 @@ PROBE → ANALYZE → AGENT → VALIDATE → DEPLOY → LOOP
 
 | 阶段 | 工作 |
 |------|------|
-| Probe | 在多个 seq_len 下构建固件，运行模拟器，记录 DRAM 流量、指令跟踪和 DAG |
-| Analyze | 计算 Load/Store/FLOPs/AI，识别 memory-bound cluster 和保存-加载对 |
-| Agent | 读取基线、DAG 和技能文档，生成候选 `bert_layer.c` 修改 |
-| Validate | 重新构建，运行测试，比较 DRAM 指标并检查数值正确性 |
-| Deploy | 保存最佳 candidate、patch、DAG 和 probe JSON |
+| Probe | 根据当前工作负载（如 `bert`、`adder`）构建固件，运行模拟器，记录 DRAM 流量、指令跟踪和 DAG |
+| Analyze | 比较 DRAM 比例，识别 DAG 中的保存-加载对，并计算各簇的算术强度 |
+| Agent | Agent（`pi` 或 `opencode`）读取 DAG、DRAM cluster 和目标技能，生成目标固件的修改 |
+| Validate | 重新构建并运行模拟器，通过工作负载对应的测试（如 `pytest`）判断通过或失败 |
+| Deploy | 保存候选固件和审计所需的运行结果及 DAG |
 | Loop | 若指标改善则继续下一轮，否则收敛并结束 |
 
 ## 状态模型

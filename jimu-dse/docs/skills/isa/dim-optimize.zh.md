@@ -85,15 +85,7 @@ SEND_LO(OP_V_WR_DRAM, dram_base);
 
 ## 自验证
 
-```bash
-# 单 tile 配置（dim=4，hidden=4，num_tiles=1）
-python3 -m pytest tests/integration/test_bert_e2e.py -k "dim4-h4" -v
-
-# 全部 6 种配置（保留多 tile 路径时）
-python3 -m pytest tests/integration/test_bert_e2e.py -v
-```
-
-测试套件包含专门的 dim4-h4 单 tile 用例。若删除多 tile 路径，dim2-h4 和 dim4-h8 用例会自动跳过。
+修改固件后，应按照项目的测试说明执行验证。可以使用 `self-verify` 技能，或查阅项目说明以获取准确的验证和收敛检查命令。
 
 ## 成本模型
 

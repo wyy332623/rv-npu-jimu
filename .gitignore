@@ -1,12 +1,6 @@
-venv/
-__pycache__/
-venv/
-
-# Local CMake build output
-_build/
-
-# Local Python virtual environment
-venv_jimu/
-
-# Closed-loop optimization results
-jimu-dse/results/
+# Root-level local outputs
+/.pytest_cache/
+/_build/
+/_out/
+/venv_jimu/
+/jimu-dse/results/

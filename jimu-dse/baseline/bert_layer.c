@@ -81,7 +81,6 @@
 #define SAVE_OUT_BASE    0x800
 #define SO_SCRATCH       0x580  /* temp storage for SO during residual add */
 #define UNIT_VEC_BASE    0x900  /* identity-matrix rows for V.T re-transpose */
-#define VRF_CACHE_OFF    (2 * _SEQ_LEN * _NUM_TILES * NATIVE_DIM)  /* after K+V */
 
 
 /* ── m_init_bias_accumulators ─────────────────────────────────────
@@ -190,66 +189,6 @@ static void mvm_tiled_q(uint32_t mat_dram_base, uint32_t vec_dram_base,
     }
 }
 
-static void mvm_tiled_vrf(uint32_t mat_dram_base, uint32_t vec_vrf_base,
-                           uint32_t num_tiles, uint32_t bias_dram_base)
-{
-    uint32_t tr, tc;
-
-    SEND_SI(OP_S_WR, REG_TILE_ROWS_ADDR, 1);
-    SEND_SI(OP_S_WR, REG_TILE_COLS_ADDR, 1);
-    SEND_SI(OP_S_WR, REG_ITERATIONS_ADDR, 1);
-
-    SEND_SI(OP_V_RD, MEM_FILL, 0);
-    SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);
-    if (num_tiles > 1) {
-        SEND_SI(OP_V_RD, MEM_FILL, 0);
-        SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_2, 0);
-    }
-
-    for (tc = 0; tc < num_tiles; tc++) {
-        SEND_SI(OP_V_RD, vec_vrf_base + tc * NATIVE_DIM, 0);
-        SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
-        SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
-        SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
-
-        for (tr = 0; tr < num_tiles; tr++) {
-            uint32_t tile_dram_addr = mat_dram_base + (tr * num_tiles + tc) * MAT_SIZE;
-            SEND_LO(OP_M_RD_DRAM, tile_dram_addr);
-            SEND_SI(OP_M_WR, MEM_MATRIX_RF, 0);
-
-            SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
-            SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
-            SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
-
-            SEND_SI(OP_MV_MUL, 0, 0);
-
-            uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_2;
-            if (tc == 0) {
-                SEND_SI(OP_V_WR, acc_vrf, 0);
-            } else {
-                SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);
-                SEND_SI(OP_V_RD, acc_vrf, 0);
-                SEND_SI(OP_V_RD, MEM_MULTIPLY_VRF, 0);
-                SEND_SI(OP_VV_ADD, 0, 0);
-                SEND_SI(OP_V_WR, acc_vrf, 0);
-            }
-        }
-    }
-
-    for (tr = 0; tr < num_tiles; tr++) {
-        uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_2;
-        SEND_SI(OP_V_RD, acc_vrf, 0);
-        SEND_LO(OP_V_RD_DRAM, bias_dram_base + tr * NATIVE_DIM);
-        SEND_SI(OP_VV_ADD, 0, 0);
-        SEND_SI(OP_V_WR, acc_vrf, 0);
-    }
-
-    if (num_tiles > 1) {
-        SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_2, 0);
-        SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
-    }
-}
-
 static void save_row_tiles(uint32_t num_tiles, uint32_t dram_base,
                             uint32_t vrf_first, uint32_t vrf_second)
 {
@@ -338,11 +277,8 @@ static void compute_k_all_positions(
     for (pos = 0; pos < seq_len; pos++) {
         uint32_t x_base = pos * hidden_size;
         mvm_tiled_q(k_base, x_base, num_tiles, k_bias);
-        uint32_t cache_off = pos * num_tiles * NATIVE_DIM;
-        SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
-        SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off);
-        SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
-        SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off + NATIVE_DIM);
+        save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
+                        MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
     }
 }
 
@@ -359,12 +295,8 @@ static void compute_v_all_positions(
     for (pos = 0; pos < seq_len; pos++) {
         uint32_t x_base = pos * hidden_size;
         mvm_tiled_q(v_base, x_base, num_tiles, v_bias);
-        uint32_t v_base_off = seq_len * num_tiles * NATIVE_DIM;
-        uint32_t cache_off = v_base_off + pos * num_tiles * NATIVE_DIM;
-        SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
-        SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off);
-        SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
-        SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, cache_off + NATIVE_DIM);
+        save_row_tiles(num_tiles, SAVE_V_BASE + pos * num_tiles * 8,
+                        MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
     }
 }
 
@@ -391,8 +323,17 @@ static void dot_product_attention(
     uint32_t heads_per_tile = NATIVE_DIM / head_size;
     uint32_t tr, h;
 
-    /* Compute Q for this position — kept in ADDSUB_VRF for direct consumption */
+    /* Compute Q for this position and save */
     mvm_tiled_q(q_base, x_base, num_tiles, q_bias);
+    save_row_tiles(num_tiles, SAVE_Q_BASE + pos * num_tiles * 8,
+                    MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+
+    /* Zero the context accumulator per row-tile */
+    for (tr = 0; tr < num_tiles; tr++) {
+        uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
+        SEND_SI(OP_V_RD, MEM_FILL, 0);
+        SEND_SI(OP_V_WR, acc_vrf, 0);
+    }
 
     for (tr = 0; tr < num_tiles; tr++) {
         uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
@@ -402,8 +343,7 @@ static void dot_product_attention(
             /* ── Build K.T MRF tile for head h ── */
             for (p = 0; p < _SEQ_LEN; p++) {
                 SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-                uint32_t k_off = p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
-                SEND_SI(OP_V_RD, MEM_MFU_INITIAL_VRF, k_off);
+                SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
                 SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
             }
             /* Zero-pad remaining rows to NATIVE_DIM */
@@ -416,7 +356,7 @@ static void dot_product_attention(
 
             /* ── Score = K.T @ Q_h → [seq_len] ── */
             SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-            SEND_SI(OP_V_RD, acc_vrf, 0);
+            SEND_LO(OP_V_RD_DRAM, SAVE_Q_BASE + pos * num_tiles * 8 + tr * 8);
             SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
             SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
             SEND_SI(OP_MV_MUL, 0, 0);
@@ -429,17 +369,11 @@ static void dot_product_attention(
              * both pipeline and IVRF (via V_RD_DRAM auto-store). */
             SEND_LO(OP_V_WR_DRAM, SCRATCH_ADDR);
 
-            /* Q consumed — zero accumulator VRF for context accumulation */
-            SEND_SI(OP_V_RD, MEM_FILL, 0);
-            SEND_SI(OP_V_WR, acc_vrf, 0);
-
             /* ── Build V.T MRF tile for head h (element-major) ──
              * Step 1: Build V position-major into MRF */
             for (p = 0; p < _SEQ_LEN; p++) {
                 SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-                uint32_t v_off = _SEQ_LEN * _NUM_TILES * NATIVE_DIM
-                               + p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
-                SEND_SI(OP_V_RD, MEM_MFU_INITIAL_VRF, v_off);
+                SEND_LO(OP_V_RD_DRAM, SAVE_V_BASE + p * num_tiles * 8 + tr * 8);
                 SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
             }
             for (pad = _SEQ_LEN; pad < NATIVE_DIM; pad++) {
@@ -537,22 +471,24 @@ void bert_encoder_layer(
             dot_product_attention(_pos, hidden_size, num_tiles,
                 _PROJ_BASE, _PROJ_BASE + _MAT_SIZE, num_head);
 
-            /* Save attention context Z to VRF cache for self-output */
+            /* Save attention context Z to DRAM scratch (contiguous,
+             * not stride-8, so mvm_tiled_q loads tile columns correctly). */
             uint32_t tr;
             for (tr = 0; tr < num_tiles; tr++) {
                 uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
                 SEND_SI(OP_V_RD, vrf, 0);
-                SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+                SEND_LO(OP_V_WR_DRAM, SCRATCH_Z + tr * NATIVE_DIM);
             }
 
             /* ── Self-output + first residual + LayerNorm ──────── */
-            mvm_tiled_vrf(_PROJ_BASE + 3 * _STRIDE, VRF_CACHE_OFF, num_tiles,
-                          _PROJ_BASE + 3 * _STRIDE + _MAT_SIZE);
-            /* Residual 1: SO + X.  Cache SO in VRF, then load X and add. */
+            mvm_tiled_q(_PROJ_BASE + 3 * _STRIDE, SCRATCH_Z, num_tiles,
+                        _PROJ_BASE + 3 * _STRIDE + _MAT_SIZE);
+            /* Residual 1: SO + X.  Save SO to scratch first,
+             * then load X and add. */
             for (tr = 0; tr < num_tiles; tr++) {
                 uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
                 SEND_SI(OP_V_RD, vrf, 0);
-                SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+                SEND_LO(OP_V_WR_DRAM, SO_SCRATCH + tr * NATIVE_DIM);
             }
             /* Save original X for residual 2 skip connection */
             for (tr = 0; tr < num_tiles; tr++) {
@@ -561,41 +497,41 @@ void bert_encoder_layer(
             }
             save_row_tiles(num_tiles, SAVE_RES_BASE + _pos * num_tiles * 8,
                             MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
-            /* Residual 1: reload SO from VRF cache, add X from VRF */
+            /* Residual 1: reload SO from SO_SCRATCH, add X from VRF */
             for (tr = 0; tr < num_tiles; tr++) {
                 uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
-                SEND_SI(OP_V_RD, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+                SEND_LO(OP_V_RD_DRAM, SO_SCRATCH + tr * NATIVE_DIM);
                 SEND_SI(OP_V_RD, vrf, 0);
                 SEND_SI(OP_VV_ADD, 0, 0);
                 SEND_SI(OP_V_WR, vrf, 0);
             }
             apply_layernorm(num_tiles, _LN1_GAMMA, _LN1_BETA, _SCRATCH);
-            /* Cache LN1 output in VRF for FFN inter */
+            /* Save LN1 output to DRAM scratch for FFN Wi input (contiguous) */
             for (tr = 0; tr < num_tiles; tr++) {
                 uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
                 SEND_SI(OP_V_RD, vrf, 0);
-                SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+                SEND_LO(OP_V_WR_DRAM, SCRATCH_LN1 + tr * NATIVE_DIM);
             }
 
             /* ── FFN: intermediate + GELU ──────────────────────── */
-            mvm_tiled_vrf(_PROJ_BASE + 4 * _STRIDE, VRF_CACHE_OFF, num_tiles,
-                          _PROJ_BASE + 4 * _STRIDE + _MAT_SIZE);
+            mvm_tiled_q(_PROJ_BASE + 4 * _STRIDE, SCRATCH_LN1, num_tiles,
+                        _PROJ_BASE + 4 * _STRIDE + _MAT_SIZE);
             SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
             SEND_SI(OP_V_GELU, 0, 0);
             SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);
             SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
             SEND_SI(OP_V_GELU, 0, 0);
             SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
-            /* Cache GELU output in VRF for FFN output */
+            /* Save GELU output to DRAM scratch for FFN Wo input (contiguous) */
             for (tr = 0; tr < num_tiles; tr++) {
                 uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
                 SEND_SI(OP_V_RD, vrf, 0);
-                SEND_SI(OP_V_WR, MEM_MFU_INITIAL_VRF, VRF_CACHE_OFF + tr * NATIVE_DIM);
+                SEND_LO(OP_V_WR_DRAM, SCRATCH_GELU + tr * NATIVE_DIM);
             }
 
             /* ── FFN output + second residual + LayerNorm ──────── */
-            mvm_tiled_vrf(_PROJ_BASE + 5 * _STRIDE, VRF_CACHE_OFF, num_tiles,
-                          _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE);
+            mvm_tiled_q(_PROJ_BASE + 5 * _STRIDE, SCRATCH_GELU, num_tiles,
+                        _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE);
             load_and_add_row_tiles(num_tiles, SAVE_RES_BASE + _pos * num_tiles * 8,
                                     MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
             apply_layernorm(num_tiles, _LN2_GAMMA, _LN2_BETA, _SCRATCH);

@@ -2,9 +2,7 @@ venv/
 __pycache__/
 venv/
 
-# Build outputs
-**/build/
-**/build_*/
+# Local CMake build output
 _build/
 
 # Local Python virtual environment

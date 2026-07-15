@@ -1,3 +1,14 @@
 venv/
 __pycache__/
 venv/
+
+# Build outputs
+**/build/
+**/build_*/
+_build/
+
+# Local Python virtual environment
+venv_jimu/
+
+# Closed-loop optimization results
+jimu-dse/results/

@@ -1,7 +1,0 @@
-/home/lirank/rv-npu-jimu/rv-npu-jimu.v10/_build/kernels/CMakeFiles/npukernels.dir
-/home/lirank/rv-npu-jimu/rv-npu-jimu.v10/_build/kernels/CMakeFiles/edit_cache.dir
-/home/lirank/rv-npu-jimu/rv-npu-jimu.v10/_build/kernels/CMakeFiles/rebuild_cache.dir
-/home/lirank/rv-npu-jimu/rv-npu-jimu.v10/_build/kernels/CMakeFiles/list_install_components.dir
-/home/lirank/rv-npu-jimu/rv-npu-jimu.v10/_build/kernels/CMakeFiles/install.dir
-/home/lirank/rv-npu-jimu/rv-npu-jimu.v10/_build/kernels/CMakeFiles/install/local.dir
-/home/lirank/rv-npu-jimu/rv-npu-jimu.v10/_build/kernels/CMakeFiles/install/strip.dir

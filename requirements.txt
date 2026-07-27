@@ -1,0 +1,4 @@
+numpy
+pyelftools
+pytest
+PyYAML>=6.0

@@ -1,0 +1,77 @@
+schema_version: 1
+name: combined
+description: Combine correct single-tile execution with DRAM traffic reduction.
+target:
+  firmware: firmware/bert/bert_layer.c
+  baseline: jimu-dse/baseline/bert_layer.c
+  allowed_files: [firmware/bert/bert_layer.c]
+  hardware: {dim: 4, hidden: 4, num_head: 2}
+  sequence_lengths: [2, 6]
+agent:
+  backend: opencode
+  model: opencode/big-pickle
+  timeout_seconds: 1800
+  context_files:
+    - firmware/bert/bert_layer.c
+prompt:
+  goal: Preserve single-tile correctness while jointly reducing compute overhead and DRAM traffic.
+  constraints:
+    - Only modify the configured firmware target.
+    - Correctness gates take precedence over performance.
+    - Apply dimension restructuring before VRF caching.
+  self_verify: Run all configured build, probe, and numerical correctness gates.
+  template: |
+    You are optimizing {target_file}.
+    Goal: {goal_name} — {goal_description}
+    Iteration: {iteration}
+    Hardware: {hardware}
+    Current metrics:
+    {metrics}
+    DAG/cluster observations:
+    {clusters}
+    Constraints:
+    {constraints}
+    Apply these skills in order:
+    {skills}
+    Acceptance commands:
+    {gate_commands}
+    Self verification: {self_verify}
+skills:
+  - name: dim-optimize
+    path: jimu-dse/docs/skills/isa/dim-optimize.md
+  - name: dag-analyze
+    path: jimu-dse/docs/skills/isa/dag-analyze.md
+  - name: vrf-cache
+    path: jimu-dse/docs/skills/isa/vrf-cache.md
+  - name: self-verify
+    path: jimu-dse/docs/skills/isa/self-verify.md
+probe:
+  metrics: [total_bytes, instr_count, mv_mul_count, mat_rd_ops]
+  cycle_limit: 300000
+  dag: {enabled: true}
+acceptance:
+  gates:
+    - {name: allowed-files, type: allowed_files}
+    - {name: firmware-build, type: build}
+    - {name: probe-complete, type: probe}
+    - name: numerical-correctness
+      type: command
+      command: python3 -m pytest tests/integration/test_bert_e2e.py -k "dim{dim} and h{hidden}" --no-header -q
+      timeout_seconds: 600
+      success_codes: [0]
+  score:
+    - {metric: total_bytes, direction: minimize, weight: 0.5}
+    - {metric: instr_count, direction: minimize, weight: 0.2}
+    - {metric: mv_mul_count, direction: minimize, weight: 0.2}
+    - {metric: mat_rd_ops, direction: minimize, weight: 0.1}
+loop:
+  max_iterations: 5
+  min_score_delta: 0.001
+  max_no_improvement: 2
+  target_score: 0.15
+artifacts:
+  save_candidates: true
+  save_diffs: true
+  save_prompts: true
+  save_probes: true
+  save_graphs: true

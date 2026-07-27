@@ -1,0 +1,43 @@
+# Python environments and caches
+.venv/
+venv*/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.coverage
+htmlcov/
+
+# Native and firmware build outputs
+_build/
+firmware/build/
+firmware/build_dim*/
+*.o
+*.elf
+*.so
+*.a
+
+# Closed-loop generated results
+jimu-dse/results/
+_out/
+
+# Generated agent configuration and dependencies
+.opencode/
+node_modules/
+
+# Generated DAG and visualization artifacts
+firmware/examples/_dag/
+*.dot
+*.svg
+
+# IDE and OS metadata
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+desktop.ini
+
+# Temporary and log files
+*.log
+*.tmp
+*.bak
+*~

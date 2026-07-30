@@ -30,6 +30,17 @@ report. Resume is allowed only when the configuration fingerprint matches.
 The complete schema and operational examples are maintained in
 `jimu-dse/docs/how-to-run.md`.
 
+The optional weighted-latency cost model derives NPU DRAM operation counts
+from emulator DRAM statistics and on-chip register accesses from EventTracer
+def-use resources. Its units are deliberately abstract; cycle-accurate latency
+remains a separate future metric.
+
+For a more architectural estimate, the optional SCALE-Sim adapter replays each
+executed MVU tile operation as a systolic GEMM and combines its cycles with the
+custom NPU's traced memory and auxiliary operations. The adapter, pinned
+upstream version, model boundary, and alternatives are documented in
+`jimu-dse/docs/timing-simulator-selection.md`.
+
 Beyond instruction-level optimizations, the document introduces a formal framework for **intentional approximation + compensation** — a class of optimizations where a computation is deliberately performed incorrectly to enable tiling or fusion, followed by a correction pass. This generalizes FlashAttention-style reasoning for the NPU architecture.
 
 The document is structured for **dual reading**: an AI agent reads it as a knowledge base and skill reference for autonomous reasoning; a human expert reads it to understand, trust, and update the system's capabilities.

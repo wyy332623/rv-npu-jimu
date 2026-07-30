@@ -1,0 +1,101 @@
+schema_version: 1
+name: weighted-latency-optimization
+description: Minimize weighted NPU DRAM and register access cost for BERT firmware.
+target:
+  firmware: firmware/bert/bert_layer.c
+  baseline: jimu-dse/baseline/bert_layer.c
+  allowed_files: [firmware/bert/bert_layer.c]
+  hardware: {dim: 4, hidden: 4, num_head: 2}
+  sequence_lengths: [2, 6]
+agent:
+  backend: opencode
+  model: opencode/big-pickle
+  timeout_seconds: 1800
+  context_files:
+    - firmware/bert/bert_layer.c
+prompt:
+  goal: Minimize the weighted estimate of NPU DRAM operations and on-chip register accesses at sequence length 6.
+  constraints:
+    - Only modify the configured firmware target.
+    - Preserve numerical correctness for the configured BERT cases.
+    - Treat estimated_time as a cost estimate, not measured hardware cycles.
+    - Optimize the complete weighted formula rather than either count alone.
+  self_verify: Run all configured scope, build, probe, and numerical correctness gates.
+  template: |
+    You are optimizing {target_file}.
+    Goal: {goal_name} — {goal_description}
+    Iteration: {iteration}
+    Hardware: {hardware}
+
+    The probe reports:
+    - memory_access_count: NPU vector/matrix DRAM read and write operations
+    - register_access_count: VRF/MRF/SRF/REG uses and defs
+    - estimated_time = memory_access_count * memory_weight
+                       + register_access_count * register_weight
+    Configured cost model:
+    {cost_model}
+    Complete read/write breakdown:
+    {metrics}
+
+    This is a weighted cost estimate, not cycle-accurate hardware time.
+
+    DAG/cluster observations:
+    {clusters}
+
+    Constraints:
+    {constraints}
+
+    Apply these skills in the listed order:
+    {skills}
+
+    Acceptance gates:
+    {gate_commands}
+    Self verification: {self_verify}
+skills:
+  - name: weighted-latency
+    path: jimu-dse/docs/skills/isa/weighted-latency.md
+  - name: dag-analyze
+    path: jimu-dse/docs/skills/isa/dag-analyze.md
+  - name: vrf-cache
+    path: jimu-dse/docs/skills/isa/vrf-cache.md
+  - name: self-verify
+    path: jimu-dse/docs/skills/isa/self-verify.md
+probe:
+  metrics:
+    - memory_access_count
+    - memory_read_count
+    - memory_write_count
+    - register_access_count
+    - register_read_count
+    - register_write_count
+    - estimated_time
+  scoring_sequence_length: 6
+  cost_model:
+    memory_weight: 10
+    register_weight: 1
+    register_resources: [VRF, MRF, SRF, REG]
+  cycle_limit: 300000
+  dag: {enabled: true}
+acceptance:
+  gates:
+    - {name: allowed-files, type: allowed_files}
+    - {name: firmware-build, type: build}
+    - {name: probe-complete, type: probe}
+    - name: numerical-correctness
+      type: command
+      command: python3 -m pytest tests/integration/test_bert_e2e.py -k "dim{dim} and h{hidden}" --no-header -q
+      timeout_seconds: 600
+      success_codes: [0]
+  score:
+    - {metric: estimated_time, direction: minimize, weight: 1.0}
+loop:
+  max_iterations: 5
+  min_score_delta: 0.001
+  max_no_improvement: 2
+  target_score: 0.15
+artifacts:
+  save_candidates: true
+  save_diffs: true
+  save_prompts: true
+  save_probes: true
+  save_graphs: true

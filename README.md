@@ -44,6 +44,15 @@ python3 jimu-dse/scripts/closed_loop.py list-goals
 python3 jimu-dse/scripts/closed_loop.py validate-config --goal dram-optimization
 python3 jimu-dse/scripts/closed_loop.py render-prompt --goal dram-optimization
 bash jimu-dse/scripts/npu_closed_loop.sh --goal dram-optimization --agent opencode
+
+# Weighted NPU DRAM/register access cost
+python3 jimu-dse/scripts/closed_loop.py validate-config \
+  --goal weighted-latency-optimization
+
+# SCALE-Sim-backed cycle estimate
+make timing-deps
+python3 jimu-dse/scripts/closed_loop.py validate-config \
+  --goal cycle-latency-optimization
 ```
 
 See `jimu-dse/docs/how-to-run.md` for the goal schema, scoring, skills,

@@ -1,0 +1,22 @@
+schema_version: 1
+name: scalesim-dim4-v1
+backend: scalesim
+source:
+  repository: https://github.com/scalesim-project/SCALE-Sim
+  version: v2.0.2
+  commit: c2b408e4b5fd8951f69b7a455e9ad5a97eef0e5c
+  license: MIT
+scalesim_config: jimu-dse/timing/scalesim-dim4.cfg
+include_scalesim_stalls: false
+memory:
+  bytes_per_cycle: 8
+  setup_cycles: 2
+  element_bytes: 2
+instruction_latencies:
+  default: 1
+  V_FUNC/SOFTMAX: 12
+  V_FUNC/LAYERNORM: 16
+  V_GELU: 4
+  V_EXP: 4
+  S_RECIP: 4
+  S_SQRT: 8

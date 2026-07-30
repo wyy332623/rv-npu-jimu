@@ -62,15 +62,26 @@ against the repository root and may not escape it.
 | `agent` | `backend` (`pi`/`opencode`), `model`, `timeout_seconds`, `context_files` |
 | `prompt` | `template`, `goal`, `constraints`, `self_verify` |
 | `skills` | ordered `{name, path}` entries |
-| `probe` | built-in `metrics`, `cycle_limit`, `dag.enabled` |
+| `probe` | built-in `metrics`, `cycle_limit`, `dag.enabled`, optional scoring sequence, cost model, and cycle-model profile |
 | `acceptance.gates` | named `allowed_files`, `build`, `probe`, or `command` gates |
 | `acceptance.score` | `{metric, direction, weight, target?}` entries; weights sum to `1.0` |
 | `loop` | `max_iterations`, `min_score_delta`, `max_no_improvement`, optional `target_score` |
 | `artifacts` | switches for candidates, diffs, prompts, probes, and graphs |
 
 Built-in metrics are `total_bytes`, `instr_count`, `mv_mul_count`,
-`mat_rd_ops`, and `test_pass`. A score metric must also appear in
-`probe.metrics`; directions are `minimize` or `maximize`.
+`mat_rd_ops`, `test_pass`, `memory_access_count`, `memory_read_count`,
+`memory_write_count`, `register_access_count`, `register_read_count`,
+`register_write_count`, and `estimated_time`. A score metric must also appear
+in `probe.metrics`; directions are `minimize` or `maximize`.
+
+Optional SCALE-Sim metrics are `scalesim_layer_count`,
+`scalesim_compute_cycles`, `scalesim_stall_cycles`, `trace_memory_cycles`,
+`auxiliary_cycles`, and `predicted_npu_cycles`. Requesting one requires:
+
+```yaml
+cycle_model:
+  profile: jimu-dse/timing/scalesim-dim4.yaml
+```
 
 Command gates support:
 
@@ -93,6 +104,7 @@ The following fields are allowed:
 | `{goal_name}`, `{goal_description}` | Goal identity and optimization intent |
 | `{iteration}`, `{target_file}`, `{hardware}` | Current execution context |
 | `{metrics}`, `{clusters}` | Latest probe results and DAG cluster text |
+| `{cost_model}` | Configured memory/register weights and resource scope |
 | `{skills}` | Full ordered skill instructions |
 | `{constraints}`, `{self_verify}` | Goal constraints and verification guidance |
 | `{gate_commands}` | Configured gate commands/types |
@@ -113,6 +125,91 @@ by at least `min_score_delta`. Otherwise the working firmware is restored to the
 current best. The loop stops at `target_score`, after
 `max_no_improvement` unsuccessful rounds, or at `max_iterations`.
 The repository's original firmware is restored when the run exits.
+
+## Weighted memory/register cost
+
+The `weighted-latency-optimization` goal minimizes a dimensionless estimate:
+
+```text
+estimated_time =
+    memory_access_count × memory_weight
+  + register_access_count × register_weight
+```
+
+It is a reproducible comparison metric, not cycle-accurate hardware time.
+Its default configuration is:
+
+```yaml
+probe:
+  scoring_sequence_length: 6
+  metrics:
+    - memory_access_count
+    - register_access_count
+    - estimated_time
+  cost_model:
+    memory_weight: 10
+    register_weight: 1
+    register_resources: [VRF, MRF, SRF, REG]
+```
+
+Memory reads and writes are the executed NPU vector/matrix DRAM operations;
+each instruction counts once regardless of transfer width. Register reads are
+selected-resource entries in EventTracer `uses`, and writes are entries in
+`defs`. Pipeline temporaries, RISC-V GPRs, and CPU memory operations are
+excluded. The JSON and Markdown reports retain weights and the complete
+read/write breakdown.
+
+Weights must be non-negative. `scoring_sequence_length` must be one of
+`target.sequence_lengths`; goals without this field continue to score the last
+configured sequence. Requesting `estimated_time` requires a `cost_model`.
+
+```bash
+python3 jimu-dse/scripts/closed_loop.py validate-config \
+  --goal weighted-latency-optimization
+python3 jimu-dse/scripts/closed_loop.py render-prompt \
+  --goal weighted-latency-optimization
+bash jimu-dse/scripts/npu_closed_loop.sh \
+  --goal weighted-latency-optimization --agent opencode
+```
+
+## SCALE-Sim cycle model
+
+Install the optional, pinned timing backend:
+
+```bash
+make timing-deps
+```
+
+The `cycle-latency-optimization` goal translates every executed `MV_MUL` into
+a small GEMM for SCALE-Sim v2.0.2. It combines SCALE-Sim systolic compute
+cycles with explicit trace-derived DRAM and auxiliary-instruction cycles:
+
+```text
+predicted_npu_cycles =
+    scalesim_compute_cycles
+  + trace_memory_cycles
+  + auxiliary_cycles
+```
+
+SCALE-Sim stall cycles remain visible as a diagnostic but are excluded by
+default because the firmware trace already includes explicit memory
+instructions. The timing profile is versioned at
+`jimu-dse/timing/scalesim-dim4.yaml` and is outside the agent's allowed files.
+
+```bash
+python3 jimu-dse/scripts/closed_loop.py validate-config \
+  --goal cycle-latency-optimization
+python3 jimu-dse/scripts/closed_loop.py render-prompt \
+  --goal cycle-latency-optimization
+JIMU_MAX_ITER=1 bash jimu-dse/scripts/npu_closed_loop.sh \
+  --goal cycle-latency-optimization --agent opencode
+```
+
+The final report compares SCALE-Sim layer count, MVU compute cycles,
+diagnostic stalls, trace memory cycles, auxiliary cycles, total predicted
+cycles, and improvement. This remains a hybrid model rather than native RTL
+cycle accuracy. See `timing-simulator-selection.md` for the evaluated tools,
+selection rationale, limitations, and calibration path.
 
 ## Creating a goal
 

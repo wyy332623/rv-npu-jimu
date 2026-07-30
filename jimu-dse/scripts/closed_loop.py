@@ -28,12 +28,19 @@ REPO_ROOT = Path(__file__).resolve().parents[2]
 GOALS_DIR = REPO_ROOT / "jimu-dse" / "goals"
 RESULTS_DIR = REPO_ROOT / "jimu-dse" / "results"
 SUPPORTED_METRICS = {
-    "total_bytes", "instr_count", "mv_mul_count", "mat_rd_ops", "test_pass"
+    "total_bytes", "instr_count", "mv_mul_count", "mat_rd_ops", "test_pass",
+    "memory_access_count", "memory_read_count", "memory_write_count",
+    "register_access_count", "register_read_count", "register_write_count",
+    "estimated_time",
+    "scalesim_layer_count", "scalesim_compute_cycles",
+    "scalesim_stall_cycles", "trace_memory_cycles", "auxiliary_cycles",
+    "predicted_npu_cycles",
 }
+REGISTER_RESOURCES = {"VRF", "MRF", "SRF", "REG"}
 TEMPLATE_FIELDS = {
     "goal_name", "goal_description", "iteration", "target_file",
     "hardware", "metrics", "clusters", "skills", "constraints",
-    "self_verify", "gate_commands",
+    "self_verify", "gate_commands", "cost_model",
 }
 TOP_LEVEL_KEYS = {
     "schema_version", "name", "description", "target", "agent", "prompt",
@@ -47,7 +54,10 @@ SECTION_KEYS = {
     "prompt": {
         "template", "goal", "constraints", "self_verify",
     },
-    "probe": {"metrics", "dag", "cycle_limit"},
+    "probe": {
+        "metrics", "dag", "cycle_limit", "scoring_sequence_length",
+        "cost_model", "cycle_model",
+    },
     "acceptance": {"gates", "score"},
     "loop": {
         "max_iterations", "min_score_delta", "max_no_improvement",
@@ -204,6 +214,99 @@ def validate_config(config: dict[str, Any]) -> None:
     unsupported = set(metrics) - SUPPORTED_METRICS
     if unsupported:
         raise ConfigError(f"unsupported probe metric(s): {', '.join(sorted(unsupported))}")
+    scoring_seq = config["probe"].get(
+        "scoring_sequence_length", target["sequence_lengths"][-1]
+    )
+    if scoring_seq not in target["sequence_lengths"]:
+        raise ConfigError(
+            "probe.scoring_sequence_length must appear in target.sequence_lengths"
+        )
+    cost_model = config["probe"].get("cost_model")
+    if cost_model is not None:
+        if not isinstance(cost_model, dict):
+            raise ConfigError("probe.cost_model must be a mapping")
+        _unknown_keys(
+            cost_model,
+            {"memory_weight", "register_weight", "register_resources"},
+            "probe.cost_model",
+        )
+        for key in ("memory_weight", "register_weight"):
+            value = cost_model.get(key)
+            if not isinstance(value, (int, float)) or value < 0:
+                raise ConfigError(f"probe.cost_model.{key} must be non-negative")
+        resources = cost_model.get("register_resources")
+        if (
+            not isinstance(resources, list)
+            or not resources
+            or len(resources) != len(set(resources))
+        ):
+            raise ConfigError(
+                "probe.cost_model.register_resources must be a non-empty unique list"
+            )
+        invalid_resources = set(resources) - REGISTER_RESOURCES
+        if invalid_resources:
+            raise ConfigError(
+                "unsupported register resource(s): "
+                + ", ".join(sorted(invalid_resources))
+            )
+    if "estimated_time" in metrics and cost_model is None:
+        raise ConfigError(
+            "probe.cost_model is required when estimated_time is requested"
+        )
+    cycle_model = config["probe"].get("cycle_model")
+    cycle_metrics = {
+        "scalesim_layer_count", "scalesim_compute_cycles",
+        "scalesim_stall_cycles", "trace_memory_cycles", "auxiliary_cycles",
+        "predicted_npu_cycles",
+    }
+    if cycle_model is not None:
+        if not isinstance(cycle_model, dict):
+            raise ConfigError("probe.cycle_model must be a mapping")
+        _unknown_keys(cycle_model, {"profile"}, "probe.cycle_model")
+        profile_path = _repo_path(
+            cycle_model.get("profile", ""), "probe.cycle_model.profile"
+        )
+        profile = _read_yaml(profile_path)
+        _unknown_keys(
+            profile,
+            {
+                "schema_version", "name", "backend", "source",
+                "scalesim_config", "include_scalesim_stalls", "memory",
+                "instruction_latencies",
+            },
+            "cycle model profile",
+        )
+        if profile.get("schema_version") != 1:
+            raise ConfigError("cycle model schema_version must be 1")
+        if profile.get("backend") != "scalesim":
+            raise ConfigError("cycle model backend must be scalesim")
+        _repo_path(profile.get("scalesim_config", ""), "cycle model scalesim_config")
+        memory = profile.get("memory", {})
+        if not isinstance(memory, dict):
+            raise ConfigError("cycle model memory must be a mapping")
+        _unknown_keys(
+            memory,
+            {"bytes_per_cycle", "setup_cycles", "element_bytes"},
+            "cycle model memory",
+        )
+        for key in ("bytes_per_cycle", "setup_cycles", "element_bytes"):
+            value = memory.get(key)
+            if not isinstance(value, (int, float)) or value <= 0:
+                raise ConfigError(f"cycle model memory.{key} must be positive")
+        latencies = profile.get("instruction_latencies")
+        if not isinstance(latencies, dict) or not latencies:
+            raise ConfigError(
+                "cycle model instruction_latencies must be a non-empty mapping"
+            )
+        for name, value in latencies.items():
+            if not isinstance(name, str) or not isinstance(value, int) or value < 0:
+                raise ConfigError(
+                    "cycle model instruction latencies must be non-negative integers"
+                )
+    if set(metrics) & cycle_metrics and cycle_model is None:
+        raise ConfigError(
+            "probe.cycle_model is required when SCALE-Sim cycle metrics are requested"
+        )
 
     gates = config["acceptance"].get("gates")
     if not isinstance(gates, list) or not gates:
@@ -299,6 +402,9 @@ def render_prompt(
         "iteration": iteration,
         "target_file": config["target"]["firmware"],
         "hardware": json.dumps(config["target"]["hardware"], sort_keys=True),
+        "cost_model": json.dumps(
+            config["probe"].get("cost_model", {}), sort_keys=True, indent=2
+        ),
         "metrics": json.dumps(metrics or {}, sort_keys=True, indent=2),
         "clusters": "\n".join(clusters or ["(not available during preview)"]),
         "skills": "\n\n".join(skill_parts),
@@ -333,6 +439,52 @@ def score_metrics(
             "contribution": contribution,
         }
     return total, details
+
+
+def calculate_cost_metrics(
+    events: list[dict[str, Any]], dram_stats: dict[str, Any],
+    cost_model: dict[str, Any] | None,
+) -> dict[str, float]:
+    """Count NPU DRAM operations and selected register def/use accesses."""
+    model = cost_model or {
+        "memory_weight": 10,
+        "register_weight": 1,
+        "register_resources": ["VRF", "MRF", "SRF", "REG"],
+    }
+    memory_reads = int(dram_stats.get("vec_rd_ops", 0)) + int(
+        dram_stats.get("mat_rd_ops", 0)
+    )
+    memory_writes = int(dram_stats.get("vec_wr_ops", 0)) + int(
+        dram_stats.get("mat_wr_ops", 0)
+    )
+    resources = set(model["register_resources"])
+    register_reads = sum(
+        1
+        for event in events
+        for resource in event.get("uses", [])
+        if resource and resource[0] in resources
+    )
+    register_writes = sum(
+        1
+        for event in events
+        for resource in event.get("defs", [])
+        if resource and resource[0] in resources
+    )
+    memory_accesses = memory_reads + memory_writes
+    register_accesses = register_reads + register_writes
+    estimated = (
+        memory_accesses * float(model["memory_weight"])
+        + register_accesses * float(model["register_weight"])
+    )
+    return {
+        "memory_access_count": memory_accesses,
+        "memory_read_count": memory_reads,
+        "memory_write_count": memory_writes,
+        "register_access_count": register_accesses,
+        "register_read_count": register_reads,
+        "register_write_count": register_writes,
+        "estimated_time": estimated,
+    }
 
 
 def _run(command: list[str] | str, timeout: int, shell: bool = False) -> dict[str, Any]:
@@ -411,11 +563,13 @@ def probe_firmware(
     script = f"""
 import json, sys
 sys.path.insert(0, '.')
+sys.path.insert(0, 'jimu-dse/scripts')
 import numpy as np
 from emulator.npu_device_mini import NpuDeviceMini, MEM_DRAM
 from emulator.npu_event_trace import EventTracer
 from emulator.trace_recorder import TraceRecorder
 from iss.mini_rv64 import MiniRV64
+from closed_loop import calculate_cost_metrics
 dim={hw['dim']}; h={hw['hidden']}; sl={seq_len}
 npu=NpuDeviceMini(native_dim=dim); npu.set_hidden_size(h); npu.set_seq_len(sl)
 npu._vrf[MEM_DRAM][0:h]=np.zeros(h,dtype=np.float32)
@@ -425,7 +579,17 @@ cpu.run(cycles={config['probe'].get('cycle_limit', 300000)})
 ds=npu.get_dram_stats()
 total=(ds.get('vec_rd_elements',0)+ds.get('vec_wr_elements',0)+ds.get('mat_rd_elements',0)+ds.get('mat_wr_elements',0))*4
 mv=sum(1 for e in tracer.events if ((e['raw'] if isinstance(e,dict) else e.inst)>>24)&0xFF in (7,27))
-print(json.dumps({{'total_bytes':total,'instr_count':len(rec.inst_trace),'mv_mul_count':mv,'mat_rd_ops':ds.get('mat_rd_ops',0),'test_pass':0}}))
+metrics={{'total_bytes':total,'instr_count':len(rec.inst_trace),'mv_mul_count':mv,'mat_rd_ops':ds.get('mat_rd_ops',0),'test_pass':0}}
+metrics.update(calculate_cost_metrics(tracer.events, ds, {config["probe"].get("cost_model")!r}))
+cycle_model={config["probe"].get("cycle_model")!r}
+if cycle_model:
+    import yaml
+    sys.path.insert(0, 'jimu-dse/timing')
+    from scalesim_adapter import simulate_trace
+    with open(cycle_model['profile'], encoding='utf-8') as handle:
+        timing_profile=yaml.safe_load(handle)
+    metrics.update(simulate_trace(tracer.events, {{'dim':dim, 'hidden':h}}, timing_profile))
+print(json.dumps(metrics))
 tracer.unpatch()
 """
     result = _run([sys.executable, "-c", script], timeout=300)
@@ -493,7 +657,7 @@ def run_gates(
             unexpected = sorted(set(changed_files) - allowed)
             item.update({"passed": not unexpected, "unexpected_files": unexpected})
         elif gate["type"] == "build":
-            build = build_firmware(config, config["target"]["sequence_lengths"][-1])
+            build = build_firmware(config, scoring_sequence_length(config))
             item.update({"passed": build["passed"], "result": build})
         elif gate["type"] == "probe":
             item.update({"passed": probe["passed"]})
@@ -512,6 +676,12 @@ def run_gates(
     return results
 
 
+def scoring_sequence_length(config: dict[str, Any]) -> int:
+    return int(config["probe"].get(
+        "scoring_sequence_length", config["target"]["sequence_lengths"][-1]
+    ))
+
+
 def _write_yaml(path: Path, data: dict[str, Any]) -> None:
     _require_yaml()
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
@@ -527,10 +697,16 @@ def _source_snapshot() -> dict[str, bytes]:
         REPO_ROOT / "firmware", REPO_ROOT / "emulator", REPO_ROOT / "iss",
         REPO_ROOT / "kernels", REPO_ROOT / "scripts", REPO_ROOT / "tests",
         REPO_ROOT / "jimu-dse" / "scripts", REPO_ROOT / "jimu-dse" / "goals",
-        REPO_ROOT / "jimu-dse" / "docs",
+        REPO_ROOT / "jimu-dse" / "docs", REPO_ROOT / "jimu-dse" / "timing",
     ]
-    suffixes = {".c", ".h", ".S", ".py", ".sh", ".md", ".yaml", ".yml", ".json"}
-    files = [REPO_ROOT / "Makefile", REPO_ROOT / "README.md", REPO_ROOT / "requirements.txt"]
+    suffixes = {
+        ".c", ".h", ".S", ".py", ".sh", ".md", ".yaml", ".yml", ".json",
+        ".cfg",
+    }
+    files = [
+        REPO_ROOT / "Makefile", REPO_ROOT / "README.md",
+        REPO_ROOT / "requirements.txt", REPO_ROOT / "requirements-timing.txt",
+    ]
     for root in roots:
         if root.is_dir():
             files.extend(
@@ -586,6 +762,52 @@ def _summary_report(summary: dict[str, Any]) -> str:
             f"| {item['iteration']} | {item['status']} | {gates} | "
             f"{item.get('score', 0):.6f} | {item.get('promoted', False)} |"
         )
+    baseline = summary.get("baseline_metrics", {})
+    best = summary.get("best_metrics", {})
+    if "estimated_time" in baseline:
+        base_time = float(baseline["estimated_time"])
+        best_time = float(best.get("estimated_time", base_time))
+        improvement = 0.0 if base_time == 0 else (base_time - best_time) * 100.0 / abs(base_time)
+        model = summary.get("cost_model", {})
+        lines += [
+            "", "## Estimated cost", "",
+            "> This is a weighted cost estimate, not cycle-accurate hardware time.",
+            "",
+            f"- Formula: `memory_access_count × {model.get('memory_weight')} + "
+            f"register_access_count × {model.get('register_weight')}`",
+            f"- Scoring sequence length: `{summary.get('scoring_sequence_length')}`",
+            "",
+            "| Metric | Baseline | Best |",
+            "|---|---:|---:|",
+            f"| Memory reads | {baseline.get('memory_read_count', 0)} | {best.get('memory_read_count', 0)} |",
+            f"| Memory writes | {baseline.get('memory_write_count', 0)} | {best.get('memory_write_count', 0)} |",
+            f"| Register reads | {baseline.get('register_read_count', 0)} | {best.get('register_read_count', 0)} |",
+            f"| Register writes | {baseline.get('register_write_count', 0)} | {best.get('register_write_count', 0)} |",
+            f"| Estimated time | {base_time:g} | {best_time:g} |",
+            f"| Improvement | — | {improvement:.2f}% |",
+        ]
+    if "predicted_npu_cycles" in baseline:
+        base_cycles = float(baseline["predicted_npu_cycles"])
+        best_cycles = float(best.get("predicted_npu_cycles", base_cycles))
+        improvement = (
+            0.0 if base_cycles == 0
+            else (base_cycles - best_cycles) * 100.0 / abs(base_cycles)
+        )
+        lines += [
+            "", "## SCALE-Sim timing estimate", "",
+            "> SCALE-Sim v2 models MVU GEMMs; trace-derived costs model this "
+            "NPU's explicit memory and auxiliary instructions.",
+            "",
+            "| Metric | Baseline | Best |",
+            "|---|---:|---:|",
+            f"| SCALE-Sim GEMM layers | {baseline.get('scalesim_layer_count', 0)} | {best.get('scalesim_layer_count', 0)} |",
+            f"| SCALE-Sim MVU compute cycles | {baseline.get('scalesim_compute_cycles', 0)} | {best.get('scalesim_compute_cycles', 0)} |",
+            f"| SCALE-Sim diagnostic stall cycles | {baseline.get('scalesim_stall_cycles', 0)} | {best.get('scalesim_stall_cycles', 0)} |",
+            f"| Trace memory cycles | {baseline.get('trace_memory_cycles', 0)} | {best.get('trace_memory_cycles', 0)} |",
+            f"| Auxiliary instruction cycles | {baseline.get('auxiliary_cycles', 0)} | {best.get('auxiliary_cycles', 0)} |",
+            f"| Predicted NPU cycles | {base_cycles:g} | {best_cycles:g} |",
+            f"| Improvement | — | {improvement:.2f}% |",
+        ]
     lines += ["", "## Reproduce", "", f"`{summary['reproduce_command']}`", ""]
     return "\n".join(lines)
 
@@ -623,6 +845,8 @@ def execute_run(
         "schema_version": 1, "goal": config["name"], "config_fingerprint": config_fingerprint(config),
         "run_dir": run_dir_display, "status": "running",
         "stop_reason": "", "best_iteration": None, "best_score": 0.0, "iterations": [],
+        "scoring_sequence_length": scoring_sequence_length(config),
+        "cost_model": config["probe"].get("cost_model"),
         "reproduce_command": (
             f"python3 jimu-dse/scripts/closed_loop.py run --goal {config['name']} "
             f"--resume {run_dir_display}"
@@ -630,13 +854,15 @@ def execute_run(
     }
     try:
         baseline_probe = probe_firmware(
-            config, config["target"]["sequence_lengths"][-1],
+            config, scoring_sequence_length(config),
             run_dir / "baseline" if config["artifacts"].get("save_graphs") else None,
         )
         if not baseline_probe["passed"]:
             summary.update({"status": "failed", "stop_reason": "baseline_probe_failed"})
             return summary
         baseline_metrics = baseline_probe["metrics"]
+        summary["baseline_metrics"] = baseline_metrics
+        summary["best_metrics"] = copy.deepcopy(baseline_metrics)
         _write_json(run_dir / "baseline-probe.json", baseline_probe)
         best_bytes = target.read_bytes()
         best_score = 0.0
@@ -646,7 +872,7 @@ def execute_run(
             target.write_bytes(best_bytes)
             before = target.read_bytes()
             source_before = _source_snapshot()
-            current_probe = probe_firmware(config, config["target"]["sequence_lengths"][-1])
+            current_probe = probe_firmware(config, scoring_sequence_length(config))
             prompt = render_prompt(
                 config, iteration, current_probe["metrics"], current_probe["clusters"]
             )
@@ -673,7 +899,7 @@ def execute_run(
                 if config["artifacts"].get("save_candidates"):
                     (run_dir / f"candidate-{iteration}.c").write_bytes(candidate)
                 candidate_probe = probe_firmware(
-                    config, config["target"]["sequence_lengths"][-1],
+                    config, scoring_sequence_length(config),
                     run_dir / f"iteration-{iteration}" if config["artifacts"].get("save_graphs") else None,
                 )
                 gates = run_gates(config, changed, candidate_probe)
@@ -700,6 +926,7 @@ def execute_run(
                         record["promoted"] = True
                         summary["best_iteration"] = iteration
                         summary["best_score"] = score
+                        summary["best_metrics"] = copy.deepcopy(candidate_probe["metrics"])
                         no_improvement = 0
                     else:
                         record["status"] = "not_improved"

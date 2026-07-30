@@ -2,7 +2,7 @@
 #
 # Top-level Makefile for common development tasks.
 
-.PHONY: all kernels firmware opencode test validate-goals list-goals clean
+.PHONY: all kernels firmware opencode timing-deps test validate-goals list-goals clean
 
 BUILD_DIR ?= _build
 
@@ -29,8 +29,11 @@ firmware:
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-opencode: .opencode/skills/dag-analyze/SKILL.md .opencode/skills/vrf-cache/SKILL.md .opencode/skills/dim-optimize/SKILL.md
+opencode: .opencode/skills/dag-analyze/SKILL.md .opencode/skills/vrf-cache/SKILL.md .opencode/skills/dim-optimize/SKILL.md .opencode/skills/weighted-latency/SKILL.md .opencode/skills/cycle-latency/SKILL.md
 	@echo "✅ OpenCode agent configured (skills installed, permissions from global config)"
+
+timing-deps:
+	python3 -m pip install -r requirements-timing.txt
 
 # -----------------------------------------------------------------------
 # Tests
@@ -42,6 +45,8 @@ validate-goals:
 	python3 jimu-dse/scripts/closed_loop.py validate-config --goal dram-optimization
 	python3 jimu-dse/scripts/closed_loop.py validate-config --goal compute-optimization
 	python3 jimu-dse/scripts/closed_loop.py validate-config --goal combined
+	python3 jimu-dse/scripts/closed_loop.py validate-config --goal weighted-latency-optimization
+	python3 jimu-dse/scripts/closed_loop.py validate-config --goal cycle-latency-optimization
 
 list-goals:
 	python3 jimu-dse/scripts/closed_loop.py list-goals
@@ -64,6 +69,7 @@ help:
 	@echo "  kernels   Build C kernel library (libnpukernels.so)"
 	@echo "  firmware  Build RISC-V firmware ELFs"
 	@echo "  opencode  Configure OpenCode agent (skills + permissions)"
+	@echo "  timing-deps  Install pinned SCALE-Sim timing backend"
 	@echo "  test      Run all tests"
 	@echo "  validate-goals  Validate every built-in optimization goal"
 	@echo "  list-goals      List configurable optimization goals"

@@ -1,0 +1,3 @@
+# PyPI package 2.0.1 is built from the official SCALE-Sim v2.0.2 release
+# (upstream commit c2b408e4b5fd8951f69b7a455e9ad5a97eef0e5c).
+scalesim==2.0.1

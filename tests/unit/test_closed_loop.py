@@ -3,6 +3,7 @@ from __future__ import annotations
 import copy
 import importlib.util
 from pathlib import Path
+import shutil
 
 import pytest
 
@@ -65,6 +66,18 @@ def test_prompt_is_stable_and_skill_ordered(config):
     assert first.index("dag-analyze") < first.index("vrf-cache") < first.index("self-verify")
     assert "cluster A" in first
     assert "Iteration: 2" in first
+    assert "Never run `make clean` from the repository root" in first
+    assert "Never delete, move, rename, or modify `jimu-dse/results`" in first
+
+
+def test_root_clean_preserves_run_results():
+    makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
+    clean_recipe = makefile.split("\nclean:\n", 1)[1].split("\n\n", 1)[0]
+    clean_results_recipe = makefile.split("\nclean-results:\n", 1)[1].split(
+        "\n\n", 1
+    )[0]
+    assert "jimu-dse/results" not in clean_recipe
+    assert "jimu-dse/results" in clean_results_recipe
 
 
 def test_weighted_score_supports_both_directions():
@@ -297,3 +310,45 @@ def test_loop_stops_after_no_change(monkeypatch, config, tmp_path):
     summary = closed_loop.execute_run(resolved, results_root=tmp_path)
     assert summary["stop_reason"] == "no_improvement_limit"
     assert summary["iterations"][0]["status"] == "no_change"
+
+
+def test_deleted_run_directory_preserves_best_candidate(
+    monkeypatch, config, tmp_path
+):
+    resolved = closed_loop.resolved_config(config)
+    resolved["loop"].update({"max_iterations": 1, "target_score": None})
+    target = ROOT / resolved["target"]["firmware"]
+    original = target.read_bytes()
+
+    monkeypatch.setattr(
+        closed_loop, "probe_firmware",
+        lambda *_args, **_kwargs: {
+            "passed": True,
+            "metrics": {
+                "total_bytes": 100, "instr_count": 100,
+                "mv_mul_count": 10, "mat_rd_ops": 10,
+            },
+            "clusters": [],
+        },
+    )
+
+    def deleting_agent(*_args):
+        target.write_bytes(original + b"\n/* unvalidated candidate */\n")
+        run_dir = next(path for path in tmp_path.iterdir() if path.is_dir())
+        shutil.rmtree(run_dir)
+        return {"status": "completed", "exit_code": 0, "timed_out": False}
+
+    monkeypatch.setattr(closed_loop, "invoke_agent", deleting_agent)
+    summary = closed_loop.execute_run(resolved, results_root=tmp_path)
+    run_dir = next(path for path in tmp_path.iterdir() if path.is_dir())
+
+    assert summary["status"] == "failed"
+    assert summary["stop_reason"] == "run_artifacts_lost"
+    assert summary["iterations"][0]["status"] == "infrastructure_error"
+    assert (run_dir / "candidate_best.c").read_bytes() == original
+    assert (run_dir / "resolved-config.yaml").is_file()
+    assert (run_dir / "baseline-probe.json").is_file()
+    assert (run_dir / "artifact-recovery.json").is_file()
+    assert (run_dir / "run-summary.json").is_file()
+    assert (run_dir / "report.md").is_file()
+    assert target.read_bytes() == original

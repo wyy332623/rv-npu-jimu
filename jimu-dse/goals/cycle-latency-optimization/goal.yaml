@@ -84,10 +84,9 @@ acceptance:
   score:
     - {metric: predicted_npu_cycles, direction: minimize, weight: 1.0}
 loop:
-  max_iterations: 5
+  max_iterations: 20
   min_score_delta: 0.001
-  max_no_improvement: 2
-  target_score: 0.15
+  max_no_improvement: 20
 artifacts:
   save_candidates: true
   save_diffs: true

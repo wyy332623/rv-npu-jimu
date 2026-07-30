@@ -235,6 +235,15 @@ Each `jimu-dse/results/run-*` directory contains:
 Agent unavailable, timeout, no change, build failure, probe failure, gate
 failure, and lack of score improvement are represented as distinct statuses.
 
+`make clean` removes only rebuildable artifacts and deliberately preserves
+closed-loop results. Use `make clean-results` only when no run is active and
+you explicitly intend to remove every directory under `jimu-dse/results`.
+Agents are forbidden from running either repository-root cleanup command or
+modifying an active run directory. If an external process still removes the
+directory, the executor stops with `run_artifacts_lost` and recreates a minimal
+recovery package containing the resolved configuration, iteration records, and
+the last validated `candidate_best.c`.
+
 ## Troubleshooting
 
 - `No module named yaml`: run `pip install -r requirements.txt`.
@@ -242,3 +251,5 @@ failure, and lack of score improvement are represented as distinct statuses.
 - Invalid goal: run `validate-config`; it reports the exact field or path.
 - Candidate rejected: inspect the relevant `iteration-N.json` gate output.
 - Resume rejected: use the same resolved goal and overrides as the original run.
+- `run_artifacts_lost`: inspect `artifact-recovery.json`; restore or archive the
+  preserved best candidate before starting another run.

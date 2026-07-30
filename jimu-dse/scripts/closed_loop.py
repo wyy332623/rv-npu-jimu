@@ -42,6 +42,12 @@ TEMPLATE_FIELDS = {
     "hardware", "metrics", "clusters", "skills", "constraints",
     "self_verify", "gate_commands", "cost_model",
 }
+AGENT_RUNTIME_SAFETY = [
+    "Never run `make clean` from the repository root. Use the configured "
+    "firmware build or test commands instead.",
+    "Never delete, move, rename, or modify `jimu-dse/results` or any "
+    "`run-*` directory; those paths contain the active run state.",
+]
 TOP_LEVEL_KEYS = {
     "schema_version", "name", "description", "target", "agent", "prompt",
     "skills", "probe", "acceptance", "loop", "artifacts",
@@ -396,6 +402,10 @@ def render_prompt(
     gate_commands = "\n".join(
         gate.get("command", gate["type"]) for gate in config["acceptance"]["gates"]
     )
+    constraints = [
+        *config["prompt"].get("constraints", []),
+        *AGENT_RUNTIME_SAFETY,
+    ]
     values = {
         "goal_name": config["name"],
         "goal_description": config["prompt"]["goal"],
@@ -408,7 +418,7 @@ def render_prompt(
         "metrics": json.dumps(metrics or {}, sort_keys=True, indent=2),
         "clusters": "\n".join(clusters or ["(not available during preview)"]),
         "skills": "\n\n".join(skill_parts),
-        "constraints": "\n".join(f"- {x}" for x in config["prompt"].get("constraints", [])),
+        "constraints": "\n".join(f"- {item}" for item in constraints),
         "self_verify": config["prompt"].get("self_verify", ""),
         "gate_commands": gate_commands,
     }
@@ -684,11 +694,43 @@ def scoring_sequence_length(config: dict[str, Any]) -> int:
 
 def _write_yaml(path: Path, data: dict[str, Any]) -> None:
     _require_yaml()
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(yaml.safe_dump(data, sort_keys=False, allow_unicode=True), encoding="utf-8")
 
 
 def _write_json(path: Path, data: Any) -> None:
+    path.parent.mkdir(parents=True, exist_ok=True)
     path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+
+
+def _recover_deleted_run_directory(
+    run_dir: Path,
+    config: dict[str, Any],
+    summary: dict[str, Any],
+    best_bytes: bytes,
+    baseline_probe: dict[str, Any] | None,
+) -> None:
+    """Recreate the minimum resumable evidence after run artifacts are removed."""
+    run_dir.mkdir(parents=True, exist_ok=True)
+    _write_yaml(run_dir / "resolved-config.yaml", config)
+    if baseline_probe is not None:
+        _write_json(run_dir / "baseline-probe.json", baseline_probe)
+    for record in summary.get("iterations", []):
+        _write_json(run_dir / f"iteration-{record['iteration']}.json", record)
+    (run_dir / "candidate_best.c").write_bytes(best_bytes)
+    _write_json(
+        run_dir / "artifact-recovery.json",
+        {
+            "status": "recovered_after_run_directory_deletion",
+            "lost_artifacts": [
+                "candidate files other than candidate_best.c",
+                "diffs",
+                "prompts",
+                "probe details other than the baseline",
+                "graphs",
+            ],
+        },
+    )
 
 
 def _source_snapshot() -> dict[str, bytes]:
@@ -840,6 +882,8 @@ def execute_run(
 
     original = target.read_bytes()
     target.write_bytes(start_file.read_bytes())
+    best_bytes = target.read_bytes()
+    baseline_probe: dict[str, Any] | None = None
     _write_yaml(run_dir / "resolved-config.yaml", config)
     summary: dict[str, Any] = {
         "schema_version": 1, "goal": config["name"], "config_fingerprint": config_fingerprint(config),
@@ -883,6 +927,31 @@ def execute_run(
             _restore_unauthorized(
                 source_before, source_after, set(config["target"]["allowed_files"])
             )
+            if not run_dir.is_dir():
+                target.write_bytes(best_bytes)
+                record = {
+                    "iteration": iteration,
+                    "status": "infrastructure_error",
+                    "agent": agent_result,
+                    "changed_files": changed,
+                    "promoted": False,
+                    "gates_passed": False,
+                    "score": 0.0,
+                    "error": "active run directory was deleted while the agent was running",
+                }
+                summary["iterations"].append(record)
+                summary.update({
+                    "status": "failed",
+                    "stop_reason": "run_artifacts_lost",
+                    "artifact_recovery": {
+                        "recreated": True,
+                        "best_candidate_preserved": True,
+                    },
+                })
+                _recover_deleted_run_directory(
+                    run_dir, config, summary, best_bytes, baseline_probe
+                )
+                return summary
             record: dict[str, Any] = {
                 "iteration": iteration, "status": agent_result["status"],
                 "agent": agent_result, "changed_files": changed, "promoted": False,
@@ -951,11 +1020,27 @@ def execute_run(
         (run_dir / "candidate_best.c").write_bytes(best_bytes)
         summary["status"] = "completed"
         return summary
+    except FileNotFoundError:
+        if run_dir.is_dir():
+            raise
+        summary.update({
+            "status": "failed",
+            "stop_reason": "run_artifacts_lost",
+            "artifact_recovery": {
+                "recreated": True,
+                "best_candidate_preserved": True,
+            },
+        })
+        _recover_deleted_run_directory(
+            run_dir, config, summary, best_bytes, baseline_probe
+        )
+        return summary
     finally:
         target.write_bytes(original)
         if not summary["stop_reason"]:
             summary["stop_reason"] = "internal_error"
             summary["status"] = "failed"
+        run_dir.mkdir(parents=True, exist_ok=True)
         _write_json(run_dir / "run-summary.json", summary)
         (run_dir / "report.md").write_text(_summary_report(summary), encoding="utf-8")
 

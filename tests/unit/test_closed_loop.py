@@ -2,8 +2,10 @@ from __future__ import annotations
 
 import copy
 import importlib.util
+import json
 from pathlib import Path
 import shutil
+import subprocess
 
 import pytest
 
@@ -136,6 +138,38 @@ def test_agent_unavailable(monkeypatch, config):
     monkeypatch.setattr(closed_loop.shutil, "which", lambda _: None)
     result = closed_loop.invoke_agent(config, "prompt")
     assert result["status"] == "agent_unavailable"
+
+
+def test_timeout_output_bytes_are_decoded(monkeypatch):
+    def timeout(*_args, **_kwargs):
+        raise subprocess.TimeoutExpired(
+            cmd=["opencode"],
+            timeout=1,
+            output=b"partial \xff stdout",
+            stderr=b"partial stderr",
+        )
+
+    monkeypatch.setattr(closed_loop.subprocess, "run", timeout)
+    result = closed_loop._run(["opencode"], timeout=1)
+
+    assert result["timed_out"]
+    assert isinstance(result["stdout"], str)
+    assert isinstance(result["stderr"], str)
+    assert "\ufffd" in result["stdout"]
+    json.dumps(result)
+
+
+def test_write_json_has_defensive_bytes_fallback(tmp_path):
+    output = tmp_path / "nested.json"
+    closed_loop._write_json(
+        output,
+        {"agent": {"stdout": b"partial \xff output"}, "path": output},
+    )
+    decoded = json.loads(output.read_text(encoding="utf-8"))
+
+    assert isinstance(decoded["agent"]["stdout"], str)
+    assert "\ufffd" in decoded["agent"]["stdout"]
+    assert decoded["path"] == str(output)
 
 
 def test_weighted_cost_counts_only_selected_npu_resources():

@@ -498,6 +498,13 @@ def calculate_cost_metrics(
 
 
 def _run(command: list[str] | str, timeout: int, shell: bool = False) -> dict[str, Any]:
+    def output_text(value: str | bytes | None) -> str:
+        if value is None:
+            return ""
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        return value
+
     started = time.monotonic()
     try:
         proc = subprocess.run(
@@ -505,14 +512,18 @@ def _run(command: list[str] | str, timeout: int, shell: bool = False) -> dict[st
             timeout=timeout, shell=shell,
         )
         return {
-            "exit_code": proc.returncode, "stdout": proc.stdout[-20000:],
-            "stderr": proc.stderr[-20000:], "timed_out": False,
+            "exit_code": proc.returncode,
+            "stdout": output_text(proc.stdout)[-20000:],
+            "stderr": output_text(proc.stderr)[-20000:],
+            "timed_out": False,
             "duration_seconds": round(time.monotonic() - started, 3),
         }
     except subprocess.TimeoutExpired as exc:
         return {
-            "exit_code": None, "stdout": (exc.stdout or "")[-20000:],
-            "stderr": (exc.stderr or "")[-20000:], "timed_out": True,
+            "exit_code": None,
+            "stdout": output_text(exc.stdout)[-20000:],
+            "stderr": output_text(exc.stderr)[-20000:],
+            "timed_out": True,
             "duration_seconds": round(time.monotonic() - started, 3),
         }
     except OSError as exc:
@@ -699,8 +710,20 @@ def _write_yaml(path: Path, data: dict[str, Any]) -> None:
 
 
 def _write_json(path: Path, data: Any) -> None:
+    def json_default(value: Any) -> str:
+        if isinstance(value, bytes):
+            return value.decode("utf-8", errors="replace")
+        if isinstance(value, Path):
+            return str(value)
+        raise TypeError(
+            f"Object of type {value.__class__.__name__} is not JSON serializable"
+        )
+
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(data, indent=2, sort_keys=True), encoding="utf-8")
+    path.write_text(
+        json.dumps(data, indent=2, sort_keys=True, default=json_default),
+        encoding="utf-8",
+    )
 
 
 def _recover_deleted_run_directory(

@@ -397,6 +397,31 @@ def test_run_heartbeat_supports_disabled_timeout():
     assert beats
 
 
+def test_default_heartbeat_interval_is_twenty_minutes(monkeypatch):
+    observed = {}
+
+    class FinishedProcess:
+        returncode = 0
+
+        def communicate(self, timeout):
+            observed["timeout"] = timeout
+            return "", ""
+
+        def kill(self):
+            pass
+
+    monkeypatch.setattr(
+        closed_loop.subprocess, "Popen", lambda *_args, **_kwargs: FinishedProcess()
+    )
+
+    result = closed_loop._run(
+        ["agent"], timeout=None, heartbeat=lambda _elapsed: None
+    )
+
+    assert result["exit_code"] == 0
+    assert observed["timeout"] == 20 * 60
+
+
 def test_write_json_has_defensive_bytes_fallback(tmp_path):
     output = tmp_path / "nested.json"
     closed_loop._write_json(

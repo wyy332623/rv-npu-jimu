@@ -728,7 +728,7 @@ def calculate_cost_metrics(
 def _run(
     command: list[str] | str, timeout: int | float | None,
     shell: bool = False, heartbeat: Callable[[float], None] | None = None,
-    heartbeat_seconds: float = 30.0,
+    heartbeat_seconds: float = 20.0 * 60.0,
 ) -> dict[str, Any]:
     def output_text(value: str | bytes | None) -> str:
         if value is None:

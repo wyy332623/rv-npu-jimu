@@ -37,7 +37,7 @@ python3 jimu-dse/scripts/closed_loop.py run --goal combined \
 
 Long runs print timestamped progress messages to stderr. The messages identify
 the resolved run directory, baseline and per-iteration probes, Agent start and
-30-second heartbeat, changed-file count, each acceptance gate, score,
+20-minute heartbeat, changed-file count, each acceptance gate, score,
 promotion, checkpoints, and final stop reason. Subprocess stdout/stderr remains
 bounded in the JSON artifacts instead of flooding the terminal. Use `--quiet`
 to suppress progress while retaining the final report.

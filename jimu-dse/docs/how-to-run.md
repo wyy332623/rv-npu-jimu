@@ -76,11 +76,14 @@ in `probe.metrics`; directions are `minimize` or `maximize`.
 
 Optional SCALE-Sim metrics are `scalesim_layer_count`,
 `scalesim_compute_cycles`, `scalesim_stall_cycles`, `trace_memory_cycles`,
-`auxiliary_cycles`, and `predicted_npu_cycles`. Requesting one requires:
+`auxiliary_cycles`, and `predicted_npu_cycles`. The parallel backend also
+provides `parallel_predicted_npu_cycles`, `overlap_saved_cycles`,
+`memory_compute_overlap_cycles`, `max_concurrent_ops`, resource utilizations,
+and `schedule_chain_count`. Requesting one requires:
 
 ```yaml
 cycle_model:
-  profile: jimu-dse/timing/scalesim-dim4.yaml
+  profile: jimu-dse/timing/scalesim-parallel-dim4.yaml
 ```
 
 Command gates support:
@@ -181,8 +184,7 @@ make timing-deps
 ```
 
 The `cycle-latency-optimization` goal translates every executed `MV_MUL` into
-a small GEMM for SCALE-Sim v2.0.2. It combines SCALE-Sim systolic compute
-cycles with explicit trace-derived DRAM and auxiliary-instruction cycles:
+a small GEMM for SCALE-Sim v2.0.2. It retains the legacy additive estimate:
 
 ```text
 predicted_npu_cycles =
@@ -193,8 +195,25 @@ predicted_npu_cycles =
 
 SCALE-Sim stall cycles remain visible as a diagnostic but are excluded by
 default because the firmware trace already includes explicit memory
-instructions. The timing profile is versioned at
-`jimu-dse/timing/scalesim-dim4.yaml` and is outside the agent's allowed files.
+instructions.
+
+The schema-v2 profile then schedules the same dynamic trace on a single DRAM
+bus and one VMM, MMM, MVU, and SPU. The scheduler enforces RAW, WAR, WAW,
+overlapping-address and structural-resource hazards. It permits independent
+DRAM transfers and computation to overlap:
+
+```text
+parallel_predicted_npu_cycles = end cycle of the scheduled critical path
+overlap_saved_cycles = predicted_npu_cycles - parallel_predicted_npu_cycles
+```
+
+Instructions enter a two-entry queue in trace order at one instruction per
+cycle. Explicit `INST_ISSUE` operations end a chain and form a completion
+barrier. Because the current BERT firmware has no `INST_ISSUE`, its complete
+trace is treated as one compatible implicit ordered stream. Cross-chain SMC is
+not modeled. The versioned profile is
+`jimu-dse/timing/scalesim-parallel-dim4.yaml` and is outside the agent's allowed
+files.
 
 ```bash
 python3 jimu-dse/scripts/closed_loop.py validate-config \
@@ -205,11 +224,27 @@ JIMU_MAX_ITER=1 bash jimu-dse/scripts/npu_closed_loop.sh \
   --goal cycle-latency-optimization --agent opencode
 ```
 
-The final report compares SCALE-Sim layer count, MVU compute cycles,
-diagnostic stalls, trace memory cycles, auxiliary cycles, total predicted
-cycles, and improvement. This remains a hybrid model rather than native RTL
-cycle accuracy. See `timing-simulator-selection.md` for the evaluated tools,
-selection rationale, limitations, and calibration path.
+The final report compares SCALE-Sim layers, legacy additive cycles, scheduled
+cycles, overlap, concurrency, and per-resource utilization. Every timed probe
+also writes `timing-schedule.json`; each record contains start/end cycles,
+resources, dependency reasons, queue wait, chain ID, DRAM range, and
+critical-path status. The file also contains `optimization_diagnostics`, a
+bounded summary of the longest critical events, largest waits, wait reasons,
+and resource-utilization ranking. That summary and the exact schedule path are
+included in every scored Agent prompt; the complete event array remains an
+audit artifact instead of consuming prompt space. Dynamic raw instruction
+indexes are available, but they are not direct C source-line numbers.
+The metric block is likewise grouped into the scored value, its delta from the
+run baseline, actionable overlap/utilization diagnostics, and the legacy model
+breakdown. Layer counts, diagnostic stall counts, and chain counts remain in
+the JSON artifacts unless they directly affect a score.
+
+The prompt and `cycle-latency` Skill define the exact operation-to-resource
+mapping. Different units may overlap only when the events have no RAW, WAR,
+WAW, configuration-fence, DRAM-range, queue-window, or chain-boundary conflict.
+All DRAM transfers still serialize on the shared `dram_bus`. This remains a
+resource-level analytical model rather than native RTL cycle accuracy. See
+`timing-simulator-selection.md` for the model boundary and calibration path.
 
 ## Creating a goal
 
@@ -228,6 +263,8 @@ Each `jimu-dse/results/run-*` directory contains:
 
 - `resolved-config.yaml` and `baseline-probe.json`
 - `prompt-N.txt`, `candidate-N.c`, `diff-N.patch`, and graph directories
+- `baseline/timing-schedule.json`, `pre-iteration-N/timing-schedule.json`, and
+  `iteration-N/timing-schedule.json` for schema-v2 cycle runs
 - `iteration-N.json` with agent status, gates, raw metrics, score, and promotion
 - `candidate_best.c`
 - `run-summary.json` and human-readable `report.md`

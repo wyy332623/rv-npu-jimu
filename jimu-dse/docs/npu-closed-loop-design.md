@@ -32,14 +32,16 @@ The complete schema and operational examples are maintained in
 
 The optional weighted-latency cost model derives NPU DRAM operation counts
 from emulator DRAM statistics and on-chip register accesses from EventTracer
-def-use resources. Its units are deliberately abstract; cycle-accurate latency
-remains a separate future metric.
+def-use resources. Its units remain deliberately abstract and separate from
+the cycle-like timing models.
 
 For a more architectural estimate, the optional SCALE-Sim adapter replays each
-executed MVU tile operation as a systolic GEMM and combines its cycles with the
-custom NPU's traced memory and auxiliary operations. The adapter, pinned
-upstream version, model boundary, and alternatives are documented in
-`jimu-dse/docs/timing-simulator-selection.md`.
+executed MVU tile operation as a systolic GEMM. Its schema-v2 backend schedules
+the traced memory and auxiliary operations on explicit DRAM, VMM, MMM, MVU,
+and SPU resources, permitting legal memory/compute overlap while enforcing
+data and structural hazards. The legacy additive estimate remains available
+for comparison. The adapter, pinned upstream version, model boundary, and
+alternatives are documented in `jimu-dse/docs/timing-simulator-selection.md`.
 
 Beyond instruction-level optimizations, the document introduces a formal framework for **intentional approximation + compensation** — a class of optimizations where a computation is deliberately performed incorrectly to enable tiling or fusion, followed by a correction pass. This generalizes FlashAttention-style reasoning for the NPU architecture.
 

@@ -39,6 +39,12 @@ OP_V_FUNC = 43
 OP_SS_ADD = 44
 OP_INST_ISSUE = 45
 
+INC_OPCODES = {
+    OP_V_RD_INC, OP_V_WR_INC, OP_V_RD_DRAM_INC, OP_V_WR_DRAM_INC,
+    OP_MV_MUL_INC, OP_VV_ADD_INC, OP_VV_MAX_INC, OP_VV_MUL_INC,
+    OP_VV_A_SUB_B_INC, OP_VV_B_SUB_A_INC,
+}
+
 SUB_SOFTMAX   = 0
 SUB_LAYERNORM = 1
 
@@ -218,6 +224,23 @@ def _resolve_defs_uses(opcode: int, opd0: int, opd1: int,
     return defs, uses
 
 
+def _memory_access(opcode: int, full_operand: int, native_dim: int):
+    """Return an element-addressed DRAM access descriptor, if any."""
+    if opcode in (OP_V_RD_DRAM, OP_V_WR_DRAM):
+        elements = native_dim
+    elif opcode in (OP_M_RD_DRAM, OP_M_WR_DRAM):
+        elements = native_dim * native_dim
+    else:
+        return None
+    direction = "read" if opcode in (OP_V_RD_DRAM, OP_M_RD_DRAM) else "write"
+    return {
+        "direction": direction,
+        "address": int(full_operand),
+        "elements": int(elements),
+        "end_address": int(full_operand) + int(elements),
+    }
+
+
 class EventTracer:
     """Wraps NpuDeviceMini and records per-instruction def-use events.
 
@@ -239,6 +262,9 @@ class EventTracer:
         self.events: list[dict] = []
         self._event_idx = 0
         self._raw_inst = 0  # stores the raw instruction from _push_instruction
+        self._raw_instruction_idx = -1
+        self._expanded_idx = 0
+        self._chain_id = 0
 
         # Save originals
         self._original_push = inner_device._push_instruction
@@ -247,6 +273,8 @@ class EventTracer:
         # Patch _push_instruction to capture the raw instruction word
         def patched_push(inst: int):
             self._raw_inst = inst
+            self._raw_instruction_idx += 1
+            self._expanded_idx = 0
             self._original_push(inst)
 
         # Patch _execute to record events.
@@ -259,20 +287,33 @@ class EventTracer:
             op_name = _opcode_name(opcode, opd0)
             defs, uses = _resolve_defs_uses(opcode, opd0, opd1,
                                             full_operand)
+            raw_opcode = (self._raw_inst >> 24) & 0xFF
             event = {
                 "idx": self._event_idx,
                 "op": op_name,
+                "opcode": opcode,
                 "raw": self._raw_inst,
+                "raw_instruction_idx": self._raw_instruction_idx,
+                "expanded_idx": self._expanded_idx,
+                "inc_parent_opcode": raw_opcode if raw_opcode in INC_OPCODES else None,
+                "chain_id": self._chain_id,
                 "defs": defs,
                 "uses": uses,
+                "memory": _memory_access(
+                    opcode, full_operand, int(inner_device.native_dim)
+                ),
             }
             self.events.append(event)
             self._event_idx += 1
+            self._expanded_idx += 1
 
             # Delegate to original with pipeline/vpipe_a
-            return self._original_execute(
+            result = self._original_execute(
                 opcode, opd0, opd1, full_operand,
                 pipeline=pipeline, vpipe_a=vpipe_a)
+            if opcode == OP_INST_ISSUE:
+                self._chain_id += 1
+            return result
 
         inner_device._push_instruction = patched_push
         inner_device._execute = patched_execute
@@ -286,3 +327,6 @@ class EventTracer:
         """Reset events list and counter."""
         self.events.clear()
         self._event_idx = 0
+        self._raw_instruction_idx = -1
+        self._expanded_idx = 0
+        self._chain_id = 0

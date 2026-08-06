@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import importlib.util
+import json
 from pathlib import Path
 
 import pytest
@@ -20,6 +21,16 @@ SPEC.loader.exec_module(adapter)
 def profile():
     value = yaml.safe_load(
         (ROOT / "jimu-dse" / "timing" / "scalesim-dim4.yaml").read_text()
+    )
+    value["scalesim_config"] = str(
+        ROOT / "jimu-dse" / "timing" / "scalesim-dim4.cfg"
+    )
+    return value
+
+
+def parallel_profile():
+    value = yaml.safe_load(
+        (ROOT / "jimu-dse" / "timing" / "scalesim-parallel-dim4.yaml").read_text()
     )
     value["scalesim_config"] = str(
         ROOT / "jimu-dse" / "timing" / "scalesim-dim4.cfg"
@@ -103,3 +114,54 @@ def test_missing_backend_has_install_instruction(monkeypatch):
     monkeypatch.setattr("builtins.__import__", fail_scalesim)
     with pytest.raises(adapter.ScaleSimUnavailable, match="requirements-timing"):
         adapter._load_scalesim()
+
+
+def test_parallel_adapter_maps_each_scalesim_layer_to_dynamic_event(
+    monkeypatch, tmp_path
+):
+    reports = [[10, 2, 0, 0, 0], [7, 1, 0, 0, 0]]
+
+    class FakeLayer:
+        def __init__(self, report):
+            self.report = report
+
+        def get_compute_report_items(self):
+            return self.report
+
+    class FakeScaleSim:
+        def __init__(self, **_kwargs):
+            self.runner = type("Runner", (), {})()
+            self.runner.single_layer_sim_object_list = [
+                FakeLayer(report) for report in reports
+            ]
+
+        def run_scale(self, top_path):
+            return None
+
+    monkeypatch.setattr(adapter, "_load_scalesim", lambda: FakeScaleSim)
+    artifact = tmp_path / "timing-schedule.json"
+    events = [
+        {
+            "idx": 10, "op": "MV_MUL", "uses": [], "defs": [],
+            "chain_id": 0,
+        },
+        {
+            "idx": 11, "op": "M_RD", "uses": [], "defs": [],
+            "chain_id": 0,
+        },
+        {
+            "idx": 12, "op": "MV_MUL", "uses": [], "defs": [],
+            "chain_id": 0,
+        },
+    ]
+
+    result = adapter.simulate_trace(
+        events, {"dim": 4, "hidden": 4}, parallel_profile(), artifact
+    )
+    schedule = json.loads(artifact.read_text())
+    records = {item["idx"]: item for item in schedule["events"]}
+
+    assert records[10]["duration_cycles"] == 8
+    assert records[12]["duration_cycles"] == 6
+    assert result["scalesim_compute_cycles"] == 14
+    assert result["parallel_predicted_npu_cycles"] < result["predicted_npu_cycles"]

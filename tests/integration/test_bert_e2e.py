@@ -461,7 +461,7 @@ def _firmware_is_single_tile_only(dim, hidden_size) -> bool:
     fw_path = Path("firmware/bert/bert_layer.c")
     if not fw_path.exists():
         return False
-    text = fw_path.read_text()
+    text = fw_path.read_text(encoding="utf-8")
     # Single-tile only firmware removes the multi-tile helper functions.
     # The baseline has compute_k_all_positions and compute_v_all_positions.
     # If those are missing, the firmware was stripped for single-tile only.

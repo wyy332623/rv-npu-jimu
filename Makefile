@@ -29,7 +29,7 @@ firmware:
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-opencode: .opencode/skills/dag-analyze/SKILL.md .opencode/skills/vrf-cache/SKILL.md .opencode/skills/dim-optimize/SKILL.md .opencode/skills/weighted-latency/SKILL.md .opencode/skills/cycle-latency/SKILL.md
+opencode: .opencode/skills/dag-analyze/SKILL.md .opencode/skills/vrf-cache/SKILL.md .opencode/skills/dim-optimize/SKILL.md .opencode/skills/weighted-latency/SKILL.md .opencode/skills/cycle-latency/SKILL.md .opencode/skills/dataflow-optimize/SKILL.md .opencode/skills/self-verify/SKILL.md
 	@echo "✅ OpenCode agent configured (skills installed, permissions from global config)"
 
 timing-deps:

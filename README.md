@@ -49,7 +49,7 @@ bash jimu-dse/scripts/npu_closed_loop.sh --goal dram-optimization --agent openco
 python3 jimu-dse/scripts/closed_loop.py validate-config \
   --goal weighted-latency-optimization
 
-# SCALE-Sim-backed cycle estimate
+# SCALE-Sim-backed parallel resource schedule
 make timing-deps
 python3 jimu-dse/scripts/closed_loop.py validate-config \
   --goal cycle-latency-optimization

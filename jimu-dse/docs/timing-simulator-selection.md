@@ -50,13 +50,30 @@ predicted_npu_cycles =
   + auxiliary_cycles
 ```
 
+For the schema-v2 `scalesim-parallel` backend, this legacy sum is retained for
+historical comparison. A deterministic scoreboard scheduler additionally maps
+each event onto one shared DRAM bus and one VMM, MMM, MVU, or SPU, enforcing
+RAW/WAR/WAW, overlapping DRAM ranges, configuration fences, and structural
+hazards:
+
+```text
+parallel_predicted_npu_cycles = scheduled trace makespan
+```
+
+The scheduler admits one instruction per cycle through a two-entry queue, so a
+later independent operation can bypass one blocked operation and overlap on a
+different unit. `INST_ISSUE` closes a chain and prevents overlap with the next
+chain. A trace with no marker is handled as one implicit ordered stream.
+
 By default, SCALE-Sim's stall cycles are reported but not added to the total.
 The firmware trace already contains explicit matrix/vector DRAM operations, so
 adding both would double-count memory costs.
 
 The adapter does not claim cycle accuracy for the entire NPU. It improves on
-access-count weighting by using an external RTL-validated systolic model for
-the dominant GEMMs, while keeping every assumption explicit and versioned.
+access-count weighting and serial summation by using an external RTL-validated
+systolic model for the dominant GEMMs and an auditable resource schedule for
+the custom instructions, while keeping every assumption explicit and
+versioned.
 
 ## Calibration and future work
 
@@ -67,6 +84,10 @@ instruction latencies should be calibrated with:
 1. per-instruction RTL or FPGA microbenchmarks;
 2. end-to-end BERT cycle measurements;
 3. held-out firmware traces used to measure prediction error.
+
+Calibration should include isolated DRAM, MVU, VMM, and MMM tests followed by
+paired DMA–MVU and DMA–VMM overlap tests. These measurements tune the profile;
+they do not change the scheduling or artifact interfaces.
 
 When this repository gains its own Verilator/RTL backend, candidates should
 use the SCALE-Sim model for fast per-iteration feedback and the native RTL

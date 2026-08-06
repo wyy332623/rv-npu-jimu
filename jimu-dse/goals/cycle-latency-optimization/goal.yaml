@@ -1,6 +1,6 @@
 schema_version: 1
 name: cycle-latency-optimization
-description: Minimize SCALE-Sim-backed predicted NPU cycles for BERT firmware.
+description: Minimize dependency- and resource-scheduled NPU cycles for BERT firmware.
 target:
   firmware: firmware/bert/bert_layer.c
   baseline: jimu-dse/baseline/bert_layer.c
@@ -11,17 +11,22 @@ agent:
   backend: opencode
   model: opencode/big-pickle
   timeout_seconds: 1800
+  work_budget:
+    max_primary_hypotheses: 1
+    analysis_deadline_seconds: 600
+    edit_deadline_seconds: 900
+    return_deadline_seconds: 1500
   context_files:
     - firmware/bert/bert_layer.c
-    - jimu-dse/timing/scalesim-dim4.yaml
+    - jimu-dse/timing/scalesim-parallel-dim4.yaml
 prompt:
-  goal: Minimize predicted NPU cycles at sequence length 6 using the SCALE-Sim-backed timing breakdown.
+  goal: Minimize parallel predicted NPU cycles at sequence length 6 using the SCALE-Sim-backed resource schedule.
   constraints:
     - Only modify the configured firmware target.
     - Preserve numerical correctness for the configured BERT cases.
     - Do not modify the timing model, adapter, emulator, tests, or metrics.
-    - Optimize predicted_npu_cycles rather than Python wall-clock time.
-  self_verify: Run all configured scope, build, probe, and numerical-correctness gates.
+    - Optimize parallel_predicted_npu_cycles rather than Python wall-clock time.
+  self_verify: Run at most one targeted quick check, then return control; the closed-loop controller runs the complete gates and official score.
   template: |
     You are optimizing {target_file}.
     Goal: {goal_name} — {goal_description}
@@ -31,14 +36,18 @@ prompt:
     Current cycle metrics:
     {metrics}
 
-    The timing backend uses SCALE-Sim v2.0.2 for executed MV_MUL GEMMs,
-    explicit EventTracer DRAM operations for memory cycles, and a protected
-    timing profile for all auxiliary instructions. SCALE-Sim stall cycles are
-    diagnostic and excluded from the total by default to avoid double-counting
-    explicit firmware memory operations.
+    The timing backend uses SCALE-Sim v2.0.2 for executed MV_MUL GEMMs and a
+    dependency/resource scheduler for traced DRAM, VMM, MMM, MVU, and SPU
+    operations. A single shared DRAM bus can overlap with independent compute.
+    Optimize the scheduled critical path; legal reordering can improve the
+    score even when legacy additive instruction costs are unchanged.
 
-    DAG/cluster observations:
-    {clusters}
+    Scored dataflow evidence:
+    {graph_context}
+
+    Start from the reported critical-path events and blocking reasons. Use the
+    timing_schedule_file only when the bounded summary is insufficient; do not
+    paste or summarize the complete event array into your response.
 
     Constraints:
     {constraints}
@@ -52,10 +61,8 @@ prompt:
 skills:
   - name: cycle-latency
     path: jimu-dse/docs/skills/isa/cycle-latency.md
-  - name: dag-analyze
-    path: jimu-dse/docs/skills/isa/dag-analyze.md
-  - name: vrf-cache
-    path: jimu-dse/docs/skills/isa/vrf-cache.md
+  - name: dataflow-optimize
+    path: jimu-dse/docs/skills/isa/dataflow-optimize.md
   - name: self-verify
     path: jimu-dse/docs/skills/isa/self-verify.md
 probe:
@@ -66,9 +73,19 @@ probe:
     - trace_memory_cycles
     - auxiliary_cycles
     - predicted_npu_cycles
+    - parallel_predicted_npu_cycles
+    - overlap_saved_cycles
+    - memory_compute_overlap_cycles
+    - max_concurrent_ops
+    - dram_bus_utilization
+    - mvu_utilization
+    - vmm_utilization
+    - mmm_utilization
+    - spu_utilization
+    - schedule_chain_count
   scoring_sequence_length: 6
   cycle_model:
-    profile: jimu-dse/timing/scalesim-dim4.yaml
+    profile: jimu-dse/timing/scalesim-parallel-dim4.yaml
   cycle_limit: 300000
   dag: {enabled: true}
 acceptance:
@@ -82,11 +99,14 @@ acceptance:
       timeout_seconds: 600
       success_codes: [0]
   score:
-    - {metric: predicted_npu_cycles, direction: minimize, weight: 1.0}
+    - {metric: parallel_predicted_npu_cycles, direction: minimize, weight: 1.0}
 loop:
+  mode: goal_driven
   max_iterations: 20
   min_score_delta: 0.001
   max_no_improvement: 20
+  target_score: 0.10
+  evaluate_timeout_candidate: true
 artifacts:
   save_candidates: true
   save_diffs: true

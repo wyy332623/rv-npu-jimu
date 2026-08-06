@@ -1,0 +1,28 @@
+schema_version: 1
+name: dataflow-optimization-methodology
+goal: cycle-latency-optimization
+target_score: 0.10
+repetitions: 3
+full_iterations: true
+arms:
+  control:
+    - name: cycle-latency
+      path: jimu-dse/docs/skills/isa/cycle-latency.md
+    - name: self-verify
+      path: jimu-dse/docs/skills/isa/self-verify.md
+  legacy:
+    - name: cycle-latency
+      path: jimu-dse/docs/skills/isa/cycle-latency.md
+    - name: dag-analyze
+      path: jimu-dse/docs/skills/isa/dag-analyze.md
+    - name: vrf-cache
+      path: jimu-dse/docs/skills/isa/vrf-cache.md
+    - name: self-verify
+      path: jimu-dse/docs/skills/isa/self-verify.md
+  treatment:
+    - name: cycle-latency
+      path: jimu-dse/docs/skills/isa/cycle-latency.md
+    - name: dataflow-optimize
+      path: jimu-dse/docs/skills/isa/dataflow-optimize.md
+    - name: self-verify
+      path: jimu-dse/docs/skills/isa/self-verify.md

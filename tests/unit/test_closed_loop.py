@@ -238,6 +238,14 @@ def test_invalid_agent_work_budget_is_rejected():
         closed_loop.validate_config(config)
 
 
+def test_zero_agent_timeout_disables_hard_limit_and_cli_budget():
+    config = closed_loop.load_config("cycle-latency-optimization")
+    resolved = closed_loop.resolved_config(config, agent_timeout=0)
+
+    assert resolved["agent"]["timeout_seconds"] == 0
+    assert "work_budget" not in resolved["agent"]
+
+
 def test_run_report_includes_parallel_schedule_metrics():
     common = {
         "predicted_npu_cycles": 100,
@@ -305,11 +313,28 @@ def test_zero_baseline_is_finite():
 
 def test_cli_overrides_environment_last(config, monkeypatch):
     monkeypatch.setenv("JIMU_MAX_ITER", "9")
+    monkeypatch.setenv("JIMU_AGENT_TIMEOUT", "120")
     monkeypatch.setenv("OPENCODE_MODEL", "env/model")
-    result = closed_loop.resolved_config(config, agent="opencode", model="cli/model")
-    assert result["loop"]["max_iterations"] == 9
+    result = closed_loop.resolved_config(
+        config, agent="opencode", model="cli/model",
+        max_iterations=10, agent_timeout=0,
+    )
+    assert result["loop"]["max_iterations"] == 10
     assert result["agent"]["backend"] == "opencode"
     assert result["agent"]["model"] == "cli/model"
+    assert result["agent"]["timeout_seconds"] == 0
+
+
+def test_run_parser_accepts_explicit_iteration_and_timeout_overrides():
+    args = closed_loop.build_parser().parse_args([
+        "run", "--goal", "cycle-latency-optimization",
+        "--max-iterations", "10", "--agent-timeout", "0",
+        "--full-iterations",
+    ])
+
+    assert args.max_iterations == 10
+    assert args.agent_timeout == 0
+    assert args.full_iterations is True
 
 
 def test_resume_fingerprint_is_stable(config):
@@ -356,6 +381,20 @@ def test_timeout_output_bytes_are_decoded(monkeypatch):
     assert isinstance(result["stderr"], str)
     assert "\ufffd" in result["stdout"]
     json.dumps(result)
+
+
+def test_run_heartbeat_supports_disabled_timeout():
+    beats = []
+    result = closed_loop._run(
+        [closed_loop.sys.executable, "-c", "import time; time.sleep(0.12)"],
+        timeout=None,
+        heartbeat=beats.append,
+        heartbeat_seconds=0.03,
+    )
+
+    assert result["exit_code"] == 0
+    assert not result["timed_out"]
+    assert beats
 
 
 def test_write_json_has_defensive_bytes_fallback(tmp_path):
@@ -520,7 +559,7 @@ def test_loop_promotes_valid_improvement_and_restores_worktree(
     assert (run_dir / "report.md").is_file()
 
 
-def test_loop_stops_after_no_change(monkeypatch, config, tmp_path):
+def test_loop_stops_after_no_change(monkeypatch, config, tmp_path, capsys):
     resolved = closed_loop.resolved_config(config)
     resolved["loop"].update({
         "max_iterations": 5, "max_no_improvement": 1, "target_score": None
@@ -543,6 +582,12 @@ def test_loop_stops_after_no_change(monkeypatch, config, tmp_path):
     summary = closed_loop.execute_run(resolved, results_root=tmp_path)
     assert summary["stop_reason"] == "no_improvement_limit"
     assert summary["iterations"][0]["status"] == "no_change"
+    progress = capsys.readouterr().err
+    assert "run started: goal=dram-optimization" in progress
+    assert "baseline probe passed" in progress
+    assert "iteration 1/5: agent started" in progress
+    assert "status=no_change" in progress
+    assert "stop_reason=no_improvement_limit" in progress
 
 
 def test_full_iterations_ignores_target_and_no_improvement(

@@ -17,7 +17,7 @@ import statistics
 import subprocess
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 try:
     import yaml
@@ -85,6 +85,28 @@ SECTION_KEYS = {
 
 class ConfigError(ValueError):
     pass
+
+
+ProgressCallback = Callable[[str], None]
+
+
+def _progress(message: str) -> None:
+    stamp = dt.datetime.now().strftime("%H:%M:%S")
+    print(f"[JIMU {stamp}] {message}", file=sys.stderr, flush=True)
+
+
+def _metric_snapshot(config: dict[str, Any], metrics: dict[str, Any]) -> str:
+    parts = []
+    for item in config["acceptance"]["score"]:
+        name = item["metric"]
+        if name in metrics:
+            parts.append(f"{name}={metrics[name]}")
+    for name in ("predicted_npu_cycles", "overlap_saved_cycles"):
+        if name in metrics and name not in {
+            item["metric"] for item in config["acceptance"]["score"]
+        }:
+            parts.append(f"{name}={metrics[name]}")
+    return ", ".join(parts) or "configured score metrics unavailable"
 
 
 def _require_yaml() -> None:
@@ -194,8 +216,10 @@ def validate_config(config: dict[str, Any]) -> None:
     agent = config["agent"]
     if agent.get("backend") not in {"pi", "opencode"}:
         raise ConfigError("agent.backend must be pi or opencode")
-    if not isinstance(agent.get("timeout_seconds"), int) or agent["timeout_seconds"] < 1:
-        raise ConfigError("agent.timeout_seconds must be a positive integer")
+    if not isinstance(agent.get("timeout_seconds"), int) or agent["timeout_seconds"] < 0:
+        raise ConfigError(
+            "agent.timeout_seconds must be a non-negative integer (0 disables it)"
+        )
     for context in agent.get("context_files", []):
         _repo_path(context, "agent.context_files")
     work_budget = agent.get("work_budget")
@@ -220,12 +244,16 @@ def validate_config(config: dict[str, Any]) -> None:
             work_budget["analysis_deadline_seconds"],
             work_budget["edit_deadline_seconds"],
             work_budget["return_deadline_seconds"],
-            agent["timeout_seconds"],
         ]
+        if agent["timeout_seconds"]:
+            deadlines.append(agent["timeout_seconds"])
         if deadlines != sorted(deadlines) or len(set(deadlines)) != len(deadlines):
             raise ConfigError(
-                "agent work-budget deadlines must be strictly ordered and end "
-                "before agent.timeout_seconds"
+                "agent work-budget deadlines must be strictly ordered"
+                + (
+                    " and end before agent.timeout_seconds"
+                    if agent["timeout_seconds"] else ""
+                )
             )
 
     skills = config["skills"]
@@ -472,7 +500,8 @@ def validate_config(config: dict[str, Any]) -> None:
 
 def resolved_config(
     config: dict[str, Any], agent: str | None = None, model: str | None = None,
-    full_iterations: bool = False,
+    full_iterations: bool = False, max_iterations: int | None = None,
+    agent_timeout: int | None = None,
 ) -> dict[str, Any]:
     result = copy.deepcopy(config)
     result.pop("_config_path", None)
@@ -487,6 +516,12 @@ def resolved_config(
         result["agent"]["backend"] = agent
     if model:
         result["agent"]["model"] = model
+    if max_iterations is not None:
+        result["loop"]["max_iterations"] = max_iterations
+    if agent_timeout is not None:
+        result["agent"]["timeout_seconds"] = agent_timeout
+        if agent_timeout == 0:
+            result["agent"].pop("work_budget", None)
     if full_iterations:
         result["loop"]["mode"] = "full_iterations"
     validate_config(result)
@@ -690,7 +725,11 @@ def calculate_cost_metrics(
     }
 
 
-def _run(command: list[str] | str, timeout: int, shell: bool = False) -> dict[str, Any]:
+def _run(
+    command: list[str] | str, timeout: int | float | None,
+    shell: bool = False, heartbeat: Callable[[float], None] | None = None,
+    heartbeat_seconds: float = 30.0,
+) -> dict[str, Any]:
     def output_text(value: str | bytes | None) -> str:
         if value is None:
             return ""
@@ -706,6 +745,53 @@ def _run(command: list[str] | str, timeout: int, shell: bool = False) -> dict[st
 
     started = time.monotonic()
     try:
+        if heartbeat is not None:
+            proc = subprocess.Popen(
+                command, cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE,
+                stderr=subprocess.PIPE, shell=shell,
+            )
+            deadline = None if not timeout else started + float(timeout)
+            try:
+                while True:
+                    remaining = (
+                        None if deadline is None
+                        else max(0.0, deadline - time.monotonic())
+                    )
+                    wait_for = heartbeat_seconds
+                    if remaining is not None:
+                        wait_for = min(wait_for, remaining)
+                    try:
+                        stdout, stderr = proc.communicate(
+                            timeout=max(wait_for, 0.001)
+                        )
+                        return {
+                            "exit_code": proc.returncode,
+                            "stdout": bounded_output(stdout),
+                            "stderr": bounded_output(stderr),
+                            "timed_out": False,
+                            "spawn_error": False,
+                            "duration_seconds": round(
+                                time.monotonic() - started, 3
+                            ),
+                        }
+                    except subprocess.TimeoutExpired:
+                        elapsed = time.monotonic() - started
+                        if deadline is not None and time.monotonic() >= deadline:
+                            proc.kill()
+                            stdout, stderr = proc.communicate()
+                            return {
+                                "exit_code": None,
+                                "stdout": bounded_output(stdout),
+                                "stderr": bounded_output(stderr),
+                                "timed_out": True,
+                                "spawn_error": False,
+                                "duration_seconds": round(elapsed, 3),
+                            }
+                        heartbeat(elapsed)
+            except BaseException:
+                proc.kill()
+                proc.communicate()
+                raise
         proc = subprocess.run(
             command, cwd=REPO_ROOT, text=True, capture_output=True,
             timeout=timeout, shell=shell,
@@ -1078,7 +1164,10 @@ def classify_agent_start_failure(
     return None
 
 
-def invoke_agent(config: dict[str, Any], prompt: str) -> dict[str, Any]:
+def invoke_agent(
+    config: dict[str, Any], prompt: str,
+    heartbeat: Callable[[float], None] | None = None,
+) -> dict[str, Any]:
     backend = config["agent"]["backend"]
     executable = shutil.which(backend)
     if not executable:
@@ -1088,7 +1177,8 @@ def invoke_agent(config: dict[str, Any], prompt: str) -> dict[str, Any]:
             "timed_out": False, "spawn_error": True, "agent_started": False,
             "failure_reason": "executable_not_found",
         }
-    timeout = int(config["agent"]["timeout_seconds"])
+    configured_timeout = int(config["agent"]["timeout_seconds"])
+    timeout = configured_timeout or None
     if backend == "opencode":
         version = _run([executable, "--version"], timeout=30)
         if version.get("spawn_error"):
@@ -1110,7 +1200,7 @@ def invoke_agent(config: dict[str, Any], prompt: str) -> dict[str, Any]:
         for item in config["skills"]:
             command += ["--skill", str(_repo_path(item["path"], "skill.path"))]
         command += ["-p", prompt]
-    result = _run(command, timeout=timeout)
+    result = _run(command, timeout=timeout, heartbeat=heartbeat)
     result["agent_started"] = (
         result["exit_code"] == 0 or _structured_agent_started(result)
     )
@@ -1128,10 +1218,14 @@ def invoke_agent(config: dict[str, Any], prompt: str) -> dict[str, Any]:
 
 def run_gates(
     config: dict[str, Any], changed_files: list[str], probe: dict[str, Any],
+    progress: Callable[[str], None] | None = None,
 ) -> list[dict[str, Any]]:
     results = []
     allowed = set(config["target"]["allowed_files"])
     for gate in config["acceptance"]["gates"]:
+        gate_started = time.monotonic()
+        if progress:
+            progress(f"gate {gate['name']} started")
         item = {"name": gate["name"], "type": gate["type"]}
         if gate["type"] == "allowed_files":
             unexpected = sorted(set(changed_files) - allowed)
@@ -1147,12 +1241,24 @@ def run_gates(
                 hidden=config["target"]["hardware"]["hidden"],
                 firmware=config["target"]["firmware"],
             )
-            result = _run(command, int(gate.get("timeout_seconds", 300)), shell=True)
+            result = _run(
+                command, int(gate.get("timeout_seconds", 300)), shell=True,
+                heartbeat=(
+                    lambda elapsed: progress(
+                        f"gate {gate['name']} still running, elapsed={elapsed:.0f}s"
+                    )
+                ) if progress else None,
+            )
             success_codes = gate.get("success_codes", [0])
             item.update({"passed": result["exit_code"] in success_codes, "result": result})
             if "test_pass" in config["probe"]["metrics"]:
                 probe["metrics"]["test_pass"] = 1 if item["passed"] else 0
         results.append(item)
+        if progress:
+            progress(
+                f"gate {gate['name']} {'passed' if item['passed'] else 'failed'} "
+                f"in {time.monotonic() - gate_started:.1f}s"
+            )
     return results
 
 
@@ -1398,8 +1504,10 @@ def _error_excerpt(agent_result: dict[str, Any]) -> str:
 def execute_run(
     config: dict[str, Any], resume: str | None = None,
     results_root: Path | None = None,
+    progress: ProgressCallback | None = _progress,
 ) -> dict[str, Any]:
     config = copy.deepcopy(config)
+    log = progress or (lambda _message: None)
     target = _repo_path(config["target"]["firmware"], "target.firmware")
     baseline_path = _repo_path(config["target"]["baseline"], "target.baseline")
     original = target.read_bytes()
@@ -1488,27 +1596,53 @@ def execute_run(
         )
 
     _write_run_checkpoint(run_dir, config, summary, best_bytes)
+    timeout_value = int(config["agent"]["timeout_seconds"])
+    timeout_label = "disabled" if timeout_value == 0 else f"{timeout_value}s"
+    log(
+        f"run {'resumed' if resume else 'started'}: goal={config['name']}, "
+        f"mode={config['loop'].get('mode', 'goal_driven')}, "
+        f"iterations={start_iteration}-{config['loop']['max_iterations']}, "
+        f"agent={config['agent']['backend']}, model={config['agent']['model']}, "
+        f"agent_timeout={timeout_label}"
+    )
+    log(f"artifacts: {run_dir_display}")
     try:
         if not resume:
+            baseline_started = time.monotonic()
+            log(
+                "baseline probe started: "
+                f"seq={scoring_sequence_length(config)}"
+            )
             baseline_probe = probe_firmware(
                 config, scoring_sequence_length(config), run_dir / "baseline",
             )
+            _write_json(run_dir / "baseline-probe.json", baseline_probe)
             if not baseline_probe["passed"]:
                 summary.update({"status": "failed", "stop_reason": "baseline_probe_failed"})
+                log("baseline probe failed; inspect baseline-probe.json and report.md")
                 return summary
             baseline_metrics = baseline_probe["metrics"]
+            log(
+                "baseline probe passed in "
+                f"{time.monotonic() - baseline_started:.1f}s: "
+                f"{_metric_snapshot(config, baseline_metrics)}"
+            )
             summary["baseline_metrics"] = baseline_metrics
             summary["best_metrics"] = copy.deepcopy(baseline_metrics)
-            _write_json(run_dir / "baseline-probe.json", baseline_probe)
             best_bytes = target.read_bytes()
             _write_run_checkpoint(run_dir, config, summary, best_bytes)
 
         for iteration in range(
             start_iteration, config["loop"]["max_iterations"] + 1
         ):
+            iteration_label = (
+                f"iteration {iteration}/{config['loop']['max_iterations']}"
+            )
             target.write_bytes(best_bytes)
             before = target.read_bytes()
             source_before = _source_snapshot()
+            pre_probe_started = time.monotonic()
+            log(f"{iteration_label}: pre-agent probe started")
             current_probe = probe_firmware(
                 config, scoring_sequence_length(config),
                 run_dir / f"pre-iteration-{iteration}",
@@ -1522,7 +1656,13 @@ def execute_run(
                 _write_json(
                     run_dir / f"pre-probe-{iteration}.json", current_probe
                 )
+                log(f"{iteration_label}: pre-agent probe failed")
                 return summary
+            log(
+                f"{iteration_label}: pre-agent probe passed in "
+                f"{time.monotonic() - pre_probe_started:.1f}s: "
+                f"{_metric_snapshot(config, current_probe['metrics'])}"
+            )
             prompt = render_prompt(
                 config, iteration, current_probe["metrics"],
                 current_probe["clusters"], current_probe.get("graph_context"),
@@ -1530,8 +1670,21 @@ def execute_run(
             )
             if config["artifacts"].get("save_prompts"):
                 (run_dir / f"prompt-{iteration}.txt").write_text(prompt, encoding="utf-8")
-            agent_result = invoke_agent(config, prompt)
+            log(f"{iteration_label}: agent started")
+            agent_result = invoke_agent(
+                config, prompt,
+                (lambda elapsed: log(
+                    f"{iteration_label}: agent still running, "
+                    f"elapsed={elapsed:.0f}s"
+                )) if progress else None,
+            )
             changed, source_after = _snapshot_changes(source_before)
+            log(
+                f"{iteration_label}: agent finished with "
+                f"status={agent_result.get('status')}, "
+                f"elapsed={float(agent_result.get('duration_seconds', 0)):.1f}s, "
+                f"changed_files={len(changed)}"
+            )
             _restore_unauthorized(
                 source_before, source_after, set(config["target"]["allowed_files"])
             )
@@ -1590,6 +1743,10 @@ def execute_run(
                     failure,
                 )
                 _write_run_checkpoint(run_dir, config, summary, best_bytes)
+                log(
+                    f"{iteration_label}: agent startup interrupted the run: "
+                    f"{startup_reason}"
+                )
                 return summary
             record: dict[str, Any] = {
                 "iteration": iteration, "status": agent_result["status"],
@@ -1614,6 +1771,10 @@ def execute_run(
                 )
                 target.write_bytes(best_bytes)
                 no_improvement += 1
+                log(
+                    f"{iteration_label}: no candidate validation; "
+                    f"status={record['status']}"
+                )
             else:
                 candidate = current_candidate
                 record["candidate_target_missing"] = not target_exists
@@ -1626,16 +1787,35 @@ def execute_run(
                     or evaluate_timeout_candidate
                 ):
                     (run_dir / candidate_name).write_bytes(candidate)
+                validation_started = time.monotonic()
+                log(f"{iteration_label}: candidate probe and gates started")
                 candidate_probe = probe_firmware(
                     config, scoring_sequence_length(config),
                     run_dir / f"iteration-{iteration}",
                 )
-                gates = run_gates(config, changed, candidate_probe)
+                log(
+                    f"{iteration_label}: candidate probe "
+                    f"{'passed' if candidate_probe['passed'] else 'failed'}; "
+                    f"{_metric_snapshot(config, candidate_probe.get('metrics', {}))}"
+                )
+                gates = run_gates(
+                    config, changed, candidate_probe,
+                    (lambda message: log(f"{iteration_label}: {message}"))
+                    if progress else None,
+                )
                 if config["artifacts"].get("save_probes"):
                     _write_json(run_dir / f"probe-{iteration}.json", candidate_probe)
                 record["probe"] = candidate_probe
                 record["gates"] = gates
                 record["gates_passed"] = all(x["passed"] for x in gates)
+                gate_summary = ", ".join(
+                    f"{gate['name']}={'PASS' if gate['passed'] else 'FAIL'}"
+                    for gate in gates
+                )
+                log(
+                    f"{iteration_label}: validation finished in "
+                    f"{time.monotonic() - validation_started:.1f}s; {gate_summary}"
+                )
                 if config["artifacts"].get("save_diffs"):
                     diff = "".join(difflib.unified_diff(
                         before.decode(errors="replace").splitlines(True),
@@ -1663,6 +1843,10 @@ def execute_run(
                         summary["best_score"] = score
                         summary["best_metrics"] = copy.deepcopy(candidate_probe["metrics"])
                         no_improvement = 0
+                        log(
+                            f"{iteration_label}: promoted; score={score:.6f}, "
+                            f"{_metric_snapshot(config, candidate_probe['metrics'])}"
+                        )
                     else:
                         record["status"] = (
                             "not_improved_after_timeout"
@@ -1670,6 +1854,10 @@ def execute_run(
                         )
                         target.write_bytes(best_bytes)
                         no_improvement += 1
+                        log(
+                            f"{iteration_label}: not promoted; score={score:.6f}, "
+                            f"best_score={best_score:.6f}"
+                        )
                 else:
                     record["status"] = (
                         "timeout_candidate_gate_failed"
@@ -1677,18 +1865,35 @@ def execute_run(
                     )
                     target.write_bytes(best_bytes)
                     no_improvement += 1
+                    failed_gates = ", ".join(
+                        gate["name"] for gate in gates if not gate["passed"]
+                    )
+                    log(
+                        f"{iteration_label}: candidate rejected by gates: "
+                        f"{failed_gates}"
+                    )
             summary["iterations"].append(record)
             _write_json(run_dir / f"iteration-{iteration}.json", record)
             summary["next_iteration"] = iteration + 1
             summary["no_improvement"] = no_improvement
             _write_run_checkpoint(run_dir, config, summary, best_bytes)
+            log(
+                f"{iteration_label}: checkpoint saved; "
+                f"status={record['status']}, best_score={best_score:.6f}, "
+                f"consecutive_no_promotion={no_improvement}"
+            )
             if config["loop"].get("mode", "goal_driven") == "goal_driven":
                 target_score = config["loop"].get("target_score")
                 if target_score is not None and best_score >= target_score:
                     summary["stop_reason"] = "target_score_reached"
+                    log(f"stopping early: target score {target_score} reached")
                     break
                 if no_improvement >= config["loop"]["max_no_improvement"]:
                     summary["stop_reason"] = "no_improvement_limit"
+                    log(
+                        "stopping early: consecutive no-promotion limit "
+                        f"{config['loop']['max_no_improvement']} reached"
+                    )
                     break
         else:
             summary["stop_reason"] = "max_iterations"
@@ -1716,6 +1921,12 @@ def execute_run(
             summary["stop_reason"] = "internal_error"
             summary["status"] = "failed"
         _write_run_checkpoint(run_dir, config, summary, best_bytes)
+        log(
+            f"run finished: status={summary['status']}, "
+            f"stop_reason={summary['stop_reason']}, "
+            f"best_iteration={summary.get('best_iteration')}, "
+            f"best_score={float(summary.get('best_score', 0)):.6f}"
+        )
 
 
 def load_experiment_config(path: str) -> dict[str, Any]:
@@ -2159,8 +2370,20 @@ def build_parser() -> argparse.ArgumentParser:
     run.add_argument("--model")
     run.add_argument("--resume")
     run.add_argument(
+        "--max-iterations", type=int,
+        help="override loop.max_iterations (CLI overrides environment and YAML)",
+    )
+    run.add_argument(
+        "--agent-timeout", type=int, metavar="SECONDS",
+        help="override the per-iteration agent timeout; 0 disables it",
+    )
+    run.add_argument(
         "--full-iterations", action="store_true",
         help="ignore score/no-improvement early stops and run max_iterations",
+    )
+    run.add_argument(
+        "--quiet", action="store_true",
+        help="suppress progress messages; the final report is still printed",
     )
     evaluate = sub.add_parser("evaluate-skill")
     evaluate.add_argument("--config", required=True)
@@ -2213,11 +2436,16 @@ def main(argv: list[str] | None = None) -> int:
         config = resolved_config(
             config, getattr(args, "agent", None), getattr(args, "model", None),
             getattr(args, "full_iterations", False),
+            getattr(args, "max_iterations", None),
+            getattr(args, "agent_timeout", None),
         )
         if args.command == "render-prompt":
             print(render_prompt(config), end="")
             return 0
-        summary = execute_run(config, args.resume)
+        summary = execute_run(
+            config, args.resume,
+            progress=None if getattr(args, "quiet", False) else _progress,
+        )
         print(_summary_report(summary))
         if summary["status"] == "interrupted":
             _print_agent_start_error(summary)

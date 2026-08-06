@@ -35,6 +35,32 @@ python3 jimu-dse/scripts/closed_loop.py run --goal combined \
   --resume jimu-dse/results/run-YYYYMMDD-HHMMSS-PID
 ```
 
+Long runs print timestamped progress messages to stderr. The messages identify
+the resolved run directory, baseline and per-iteration probes, Agent start and
+30-second heartbeat, changed-file count, each acceptance gate, score,
+promotion, checkpoints, and final stop reason. Subprocess stdout/stderr remains
+bounded in the JSON artifacts instead of flooding the terminal. Use `--quiet`
+to suppress progress while retaining the final report.
+
+Explicit loop controls are available without editing YAML:
+
+```bash
+# Run exactly 10 iterations unless an infrastructure/agent-start failure occurs.
+bash jimu-dse/scripts/npu_closed_loop.sh \
+  --goal cycle-latency-optimization --agent opencode \
+  --max-iterations 10 --full-iterations
+
+# Additionally disable the per-iteration Agent timeout and advisory work budget.
+# Build, probe, and correctness-gate safety timeouts remain enabled.
+bash jimu-dse/scripts/npu_closed_loop.sh \
+  --goal cycle-latency-optimization --agent opencode \
+  --max-iterations 10 --full-iterations --agent-timeout 0
+```
+
+`--full-iterations` ignores `target_score` and the consecutive-no-promotion
+limit. It does not override unrecoverable failures, missing Agent executables,
+provider rate limits, or failed baseline infrastructure.
+
 Resume loads `candidate_best.c` and requires the selected goal's fully resolved
 configuration fingerprint to match. This prevents accidentally continuing a run
 with different hardware, gates, skills, or scoring.
@@ -43,7 +69,8 @@ with different hardware, gates, skills, or scoring.
 
 Highest to lowest:
 
-1. Explicit CLI values (`--agent`, `--model`).
+1. Explicit CLI values (`--agent`, `--model`, `--max-iterations`,
+   `--agent-timeout`).
 2. Compatibility environment variables (`JIMU_MAX_ITER`,
    `JIMU_AGENT_TIMEOUT`, `OPENCODE_MODEL`).
 3. Values in `goal.yaml`.
@@ -59,7 +86,7 @@ against the repository root and may not escape it.
 |---|---|
 | root | `schema_version`, `name`, `description` |
 | `target` | `firmware`, `baseline`, `allowed_files`, exact `hardware` values, `sequence_lengths` |
-| `agent` | `backend` (`pi`/`opencode`), `model`, `timeout_seconds`, `context_files` |
+| `agent` | `backend` (`pi`/`opencode`), `model`, `timeout_seconds` (`0` disables the Agent hard timeout), `context_files` |
 | `prompt` | `template`, `goal`, `constraints`, `self_verify` |
 | `skills` | ordered `{name, path}` entries |
 | `probe` | built-in `metrics`, `cycle_limit`, `dag.enabled`, optional scoring sequence, cost model, and cycle-model profile |

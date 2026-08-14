@@ -66,6 +66,9 @@ skills:
   - name: self-verify
     path: jimu-dse/docs/skills/isa/self-verify.md
 probe:
+  workload_manifest: jimu-dse/workloads/bert-dim4-seq6.yaml
+  timed_device:
+    profile: jimu-dse/timing/npu-timed-v1.yaml
   metrics:
     - scalesim_layer_count
     - scalesim_compute_cycles
@@ -83,6 +86,11 @@ probe:
     - mmm_utilization
     - spu_utilization
     - schedule_chain_count
+    - timed_wall_cycles
+    - timed_fifo_full_stall_cycles
+    - timed_scoreboard_stall_cycles
+    - timed_dram_stall_cycles
+    - timed_frontend_overflow_count
   scoring_sequence_length: 6
   cycle_model:
     profile: jimu-dse/timing/scalesim-parallel-dim4.yaml

@@ -2,7 +2,14 @@
 
 ## Decision
 
-The closed loop integrates
+The closed loop uses two complementary timing layers. The native
+`TimedNpuDevice` is a lock-step MMIO device for the complete custom instruction
+stream. It models decoder and FIFO pressure, scoreboarding, issue width,
+per-unit pipelines, and a shared DRAM bus while delegating retirement to the
+functional emulator. This makes firmware BUSY/DONE/FULL and CHAIN_STATUS
+polling part of execution.
+
+The second layer integrates
 [SCALE-Sim](https://github.com/scalesim-project/SCALE-Sim) v2.0.2 at upstream
 commit `c2b408e4b5fd8951f69b7a455e9ad5a97eef0e5c` (MIT license).
 The installed Python package reports version 2.0.1 because that is the package
@@ -33,6 +40,11 @@ and Accelergy integration.
 | [Verilator](https://github.com/verilator/verilator) | Cycle-accurate execution of the project's own RTL | The repository currently has no complete RTL backend to compile; this remains the preferred final validation tier |
 
 ## Integration boundary
+
+Every raw MMIO word is decoded once into the canonical `NpuCommand` model.
+Both EventTracer and the native timed device consume that model, preventing
+the timing and graph paths from assigning different semantics to an opcode.
+The default native profile is `jimu-dse/timing/npu-timed-v1.yaml`.
 
 The adapter translates each executed `MV_MUL` EventTracer event into:
 
@@ -69,7 +81,7 @@ By default, SCALE-Sim's stall cycles are reported but not added to the total.
 The firmware trace already contains explicit matrix/vector DRAM operations, so
 adding both would double-count memory costs.
 
-The adapter does not claim cycle accuracy for the entire NPU. It improves on
+Neither profile-based layer claims cycle accuracy for the entire NPU. They improve on
 access-count weighting and serial summation by using an external RTL-validated
 systolic model for the dominant GEMMs and an auditable resource schedule for
 the custom instructions, while keeping every assumption explicit and
@@ -89,6 +101,6 @@ Calibration should include isolated DRAM, MVU, VMM, and MMM tests followed by
 paired DMA–MVU and DMA–VMM overlap tests. These measurements tune the profile;
 they do not change the scheduling or artifact interfaces.
 
-When this repository gains its own Verilator/RTL backend, candidates should
-use the SCALE-Sim model for fast per-iteration feedback and the native RTL
-cycle count as the final promotion gate.
+When a complete Verilator/RTL backend is available, candidates should use the
+lock-step device plus SCALE-Sim for fast per-iteration feedback and the RTL
+cycle count as the final promotion/calibration gate.

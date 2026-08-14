@@ -4,6 +4,7 @@ from emulator.npu_event_trace import (
     OP_V_RD_DRAM,
     OP_V_RD_DRAM_INC,
 )
+from emulator.workload import TensorRegion, WorkloadManifest
 
 
 class FakeDevice:
@@ -52,4 +53,20 @@ def test_event_tracer_records_chain_inc_parent_and_memory_span():
     }
     assert second["memory"]["address"] == 104
 
+    tracer.unpatch()
+
+
+def test_event_tracer_attaches_generic_tensor_semantics():
+    device = FakeDevice()
+    manifest = WorkloadManifest(tensors=[
+        TensorRegion("input", address=96, length=16, shape=(16,),
+                     frozen=True, role="input"),
+    ])
+    tracer = EventTracer(device, manifest=manifest)
+
+    device._push_instruction(raw(OP_V_RD_DRAM, 100))
+
+    assert tracer.events[0]["tensor_reads"] == ["input"]
+    assert tracer.events[0]["tensor_writes"] == []
+    assert tracer.events[0]["memory"]["tensors"] == ["input"]
     tracer.unpatch()

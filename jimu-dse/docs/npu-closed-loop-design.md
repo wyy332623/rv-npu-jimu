@@ -43,6 +43,16 @@ data and structural hazards. The legacy additive estimate remains available
 for comparison. The adapter, pinned upstream version, model boundary, and
 alternatives are documented in `jimu-dse/docs/timing-simulator-selection.md`.
 
+The current probe also supports a native lock-step timing wrapper plus a
+workload manifest. The wrapper makes firmware polling observe finite FIFO,
+scoreboard, execution-unit, and DRAM timing while preserving
+`NpuDeviceMini` as the functional oracle. The manifest names tensor regions
+and observable outputs. Executed commands, tensor edges, source lines, and
+timing records are joined into `cross-layer-graph.json`; its bounded text view
+is supplied to the agent. This generic evidence path is documented in
+`docs/unified-firmware-optimization.md` and is independent of the legacy
+BERT-specific graph renderers.
+
 Beyond instruction-level optimizations, the document introduces a formal framework for **intentional approximation + compensation** — a class of optimizations where a computation is deliberately performed incorrectly to enable tiling or fusion, followed by a correction pass. This generalizes FlashAttention-style reasoning for the NPU architecture.
 
 The document is structured for **dual reading**: an AI agent reads it as a knowledge base and skill reference for autonomous reasoning; a human expert reads it to understand, trust, and update the system's capabilities.
@@ -85,8 +95,8 @@ PROBE → ANALYZE → AGENT → VALIDATE → DEPLOY → LOOP
 
 ```
 ┌──────────────────────────────────────────────┐
-│  Initialize: copy baseline bert_layer.c       │
-│  (from jimu-dse/baseline/bert_layer.c)        │
+│  Initialize: snapshot current target firmware  │
+│  (committed baseline remains an audit ref)     │
 └──────────────────────┬───────────────────────┘
                        │
                        ▼
@@ -141,14 +151,14 @@ PROBE → ANALYZE → AGENT → VALIDATE → DEPLOY → LOOP
 
 | | Within a run | Between runs |
 |--|-------------|--------------|
-| **Behavior** | Iteration N+1 starts from iteration N's result (incremental) | Default: copies `jimu-dse/baseline/bert_layer.c` for fresh start |
+| **Behavior** | Iteration N+1 starts from iteration N's result (incremental) | A fresh run starts from the target file supplied at invocation |
 | **Flag needed** | None — always incremental | `--resume <dir>` to continue from a previous run's best candidate |
-| **Baseline** | Measured at run start (first iteration) | Comparison always against the file-based baseline |
+| **Baseline** | Measured from the run-start target | The committed file is retained as an audit/reference baseline |
 
 ### 1.4 Key Design Points
 
 1. **No git dependency**: Baseline management uses `cp`, not `git checkout`. Works on exported code.
-2. **File-based baseline**: `jimu-dse/baseline/bert_layer.c` is a committed copy of the unoptimized firmware.
+2. **Safe current-target baseline**: scoring starts from the current target; `jimu-dse/baseline/bert_layer.c` remains a committed historical reference.
 3. **DAG-guided**: The agent reads `dag_agent/micro_op_dag.txt` to identify save-load pairs before applying optimizations.
 4. **Timestamped run directories**: Each run creates `jimu-dse/results/run-<timestamp>/` with all artifacts.
 5. **Only `bert_layer.c` is modified**: The agent never touches emulator, ISS, or test code.

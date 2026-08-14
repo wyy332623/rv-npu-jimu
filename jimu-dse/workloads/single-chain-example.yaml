@@ -1,0 +1,11 @@
+schema_version: 1
+name: single-chain-example
+firmware: ../../firmware/build_dim4/single-chain.elf
+hardware_profile: ../timing/npu-timed-v1.yaml
+cycle_limit: 10000
+drain_on_halt: true
+metadata: {native_dim: 4, hidden_size: 4, seq_len: 1}
+tensors:
+  - {name: weights, address: 0x400, length: 16, shape: [4, 4], role: parameter, frozen: true}
+  - {name: input, address: 0x2000, length: 4, shape: [4], role: input}
+  - {name: output, address: 0x2100, length: 4, shape: [4], role: output, observable: true, tolerance: 0.0}

@@ -52,10 +52,19 @@ class MiniRV64:
 
             # Entry point
             self.pc = elf.header.e_entry
+        if self.mmio_dev and hasattr(self.mmio_dev, "set_source_map"):
+            from emulator.workload import ElfSourceMap
+            self.mmio_dev.set_source_map(ElfSourceMap.from_elf(path))
 
     def set_mmio_device(self, dev):
         """Set the MMIO device handler (must have load/store methods)."""
         self.mmio_dev = dev
+
+    def _set_mmio_context(self):
+        if self.mmio_dev and hasattr(self.mmio_dev, "set_cpu_context"):
+            self.mmio_dev.set_cpu_context(
+                pc=self.pc, cycle=self.cycle_count, inst_count=self.inst_count,
+            )
 
     # -- Memory access --
     def _mmio_hit(self, addr: int) -> bool:
@@ -64,6 +73,7 @@ class MiniRV64:
     def read_mem(self, addr: int, size: int) -> bytes:
         if self._mmio_hit(addr):
             if self.mmio_dev:
+                self._set_mmio_context()
                 return self.mmio_dev.load(addr - self.mmio_base, size)
             return b'\x00' * size
         offset = addr
@@ -74,6 +84,7 @@ class MiniRV64:
     def write_mem(self, addr: int, data: bytes):
         if self._mmio_hit(addr):
             if self.mmio_dev:
+                self._set_mmio_context()
                 self.mmio_dev.store(addr - self.mmio_base, data)
             return
         offset = addr
@@ -217,7 +228,9 @@ class MiniRV64:
                 if funct7 & 0x20:
                     self.regs[rd] = self.regs[rs1] >> shamt  # arithmetic (sign extend handles)
                 else:
-                    self.regs[rd] = (self.regs[rs1] & 0xFFFFFFFF) >> shamt
+                    self.regs[rd] = (
+                        self.regs[rs1] & 0xFFFFFFFFFFFFFFFF
+                    ) >> shamt
             elif funct3 == 6:  # ORI
                 self.regs[rd] = self.regs[rs1] | imm
             elif funct3 == 7:  # ANDI
@@ -332,6 +345,8 @@ class MiniRV64:
             if self.halted:
                 break
             self.step()
+            if self.mmio_dev and hasattr(self.mmio_dev, "tick"):
+                self.mmio_dev.tick()
 
     def read_register(self, idx: int) -> int:
         return self.regs[idx]

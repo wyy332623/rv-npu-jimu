@@ -40,6 +40,15 @@ SUPPORTED_METRICS = {
     "memory_compute_overlap_cycles", "max_concurrent_ops",
     "dram_bus_utilization", "mvu_utilization", "vmm_utilization",
     "mmm_utilization", "spu_utilization", "schedule_chain_count",
+    "timed_wall_cycles", "timed_command_count", "timed_poll_reads",
+    "timed_active_cycles", "timed_simulator_cycles",
+    "timed_first_enqueue_cycle", "timed_last_retire_cycle",
+    "timed_frontend_overflow_count", "timed_max_fifo_occupancy",
+    "timed_decoder_stall_cycles", "timed_fifo_full_stall_cycles",
+    "timed_scoreboard_stall_cycles", "timed_issue_stall_cycles",
+    "timed_unit_stall_cycles", "timed_dram_stall_cycles",
+    "timed_queue_wait_cycles", "timed_dependency_stall_cycles",
+    "timed_resource_stall_cycles",
 }
 REGISTER_RESOURCES = {"VRF", "MRF", "SRF", "REG"}
 TEMPLATE_FIELDS = {
@@ -60,6 +69,7 @@ TOP_LEVEL_KEYS = {
 SECTION_KEYS = {
     "target": {
         "firmware", "baseline", "allowed_files", "hardware", "sequence_lengths",
+        "build",
     },
     "agent": {
         "backend", "model", "timeout_seconds", "context_files", "work_budget",
@@ -69,7 +79,7 @@ SECTION_KEYS = {
     },
     "probe": {
         "metrics", "dag", "cycle_limit", "scoring_sequence_length",
-        "cost_model", "cycle_model",
+        "cost_model", "cycle_model", "timed_device", "workload_manifest",
     },
     "acceptance": {"gates", "score"},
     "loop": {
@@ -212,6 +222,27 @@ def validate_config(config: dict[str, Any]) -> None:
     seqs = target["sequence_lengths"]
     if not isinstance(seqs, list) or not seqs or any(not isinstance(x, int) or x < 1 for x in seqs):
         raise ConfigError("target.sequence_lengths must contain positive integers")
+    build_spec = target.get("build")
+    if build_spec is not None:
+        if not isinstance(build_spec, dict):
+            raise ConfigError("target.build must be a mapping")
+        _unknown_keys(
+            build_spec, {"command", "elf", "cwd", "environment"},
+            "target.build",
+        )
+        command = build_spec.get("command")
+        if not isinstance(command, list) or not command or not all(
+            isinstance(value, str) and value for value in command
+        ):
+            raise ConfigError("target.build.command must be a non-empty string list")
+        _repo_path(build_spec.get("elf", ""), "target.build.elf", must_exist=False)
+        _repo_path(build_spec.get("cwd", "."), "target.build.cwd")
+        environment = build_spec.get("environment", {})
+        if not isinstance(environment, dict) or not all(
+            isinstance(key, str) and isinstance(value, str)
+            for key, value in environment.items()
+        ):
+            raise ConfigError("target.build.environment must map strings to strings")
 
     agent = config["agent"]
     if agent.get("backend") not in {"pi", "opencode"}:
@@ -439,6 +470,37 @@ def validate_config(config: dict[str, Any]) -> None:
         raise ConfigError(
             "probe.cycle_model is required when SCALE-Sim cycle metrics are requested"
         )
+
+    timed_metric_names = {name for name in SUPPORTED_METRICS if name.startswith("timed_")}
+    timed_device = config["probe"].get("timed_device")
+    if timed_device is not None:
+        if not isinstance(timed_device, dict):
+            raise ConfigError("probe.timed_device must be a mapping")
+        _unknown_keys(timed_device, {"profile"}, "probe.timed_device")
+        profile_path = _repo_path(
+            timed_device.get("profile", ""), "probe.timed_device.profile"
+        )
+        profile = _read_yaml(profile_path)
+        if profile.get("schema_version") != 1 or not isinstance(
+            profile.get("timed_device"), dict
+        ):
+            raise ConfigError(
+                "timed device profile must use schema_version 1 and define timed_device"
+            )
+    if set(metrics) & timed_metric_names and timed_device is None:
+        raise ConfigError(
+            "probe.timed_device is required when timed device metrics are requested"
+        )
+    workload_manifest = config["probe"].get("workload_manifest")
+    if workload_manifest is not None:
+        manifest_path = _repo_path(
+            workload_manifest, "probe.workload_manifest"
+        )
+        manifest = _read_yaml(manifest_path)
+        if manifest.get("schema_version", 1) != 1:
+            raise ConfigError("workload manifest schema_version must be 1")
+        if not isinstance(manifest.get("tensors", []), list):
+            raise ConfigError("workload manifest tensors must be a list")
 
     gates = config["acceptance"].get("gates")
     if not isinstance(gates, list) or not gates:
@@ -824,6 +886,44 @@ def _run(
 def build_firmware(config: dict[str, Any], seq_len: int) -> dict[str, Any]:
     hw = config["target"]["hardware"]
     dim, hidden, heads = hw["dim"], hw["hidden"], hw["num_head"]
+    build_spec = config["target"].get("build")
+    if build_spec is not None:
+        fields = {
+            "firmware": config["target"]["firmware"],
+            "dim": dim, "hidden": hidden, "num_head": heads,
+            "seq_len": seq_len,
+            "elf": build_spec["elf"],
+            "repo": str(REPO_ROOT),
+        }
+        command = [value.format(**fields) for value in build_spec["command"]]
+        env = os.environ.copy()
+        env.update({
+            key: value.format(**fields)
+            for key, value in build_spec.get("environment", {}).items()
+        })
+        cwd = _repo_path(build_spec.get("cwd", "."), "target.build.cwd")
+        started = time.monotonic()
+        try:
+            proc = subprocess.run(
+                command, cwd=cwd, env=env, text=True, capture_output=True,
+                timeout=300,
+            )
+            result = {
+                "exit_code": proc.returncode, "stdout": proc.stdout[-20000:],
+                "stderr": proc.stderr[-20000:], "timed_out": False,
+            }
+        except (subprocess.TimeoutExpired, OSError) as exc:
+            result = {
+                "exit_code": None, "stdout": "", "stderr": str(exc),
+                "timed_out": isinstance(exc, subprocess.TimeoutExpired),
+            }
+        elf_path = _repo_path(build_spec["elf"], "target.build.elf", must_exist=False)
+        result.update({
+            "duration_seconds": round(time.monotonic() - started, 3),
+            "elf": str(elf_path.relative_to(REPO_ROOT)),
+            "passed": result["exit_code"] == 0 and elf_path.is_file(),
+        })
+        return result
     proj_base = hidden * seq_len + 4
     mat_size = hidden * hidden
     stride = mat_size + hidden
@@ -945,6 +1045,7 @@ def _timing_schedule_context(schedule_path: Path) -> str:
 def _graph_context(
     dag_dir: Path, config: dict[str, Any], seq_len: int, dag: dict[str, Any],
     timing_schedule_path: Path | None = None,
+    cross_layer_path: Path | None = None,
 ) -> str:
     """Build a bounded, configuration-stamped graph summary for the agent."""
     hw = config["target"]["hardware"]
@@ -962,6 +1063,12 @@ def _graph_context(
     ]
     if timing_schedule_path is not None:
         lines.extend(["", _timing_schedule_context(timing_schedule_path)])
+    if cross_layer_path is not None and cross_layer_path.is_file():
+        cross_layer = cross_layer_path.read_text(
+            encoding="utf-8", errors="replace"
+        ).strip()
+        if cross_layer:
+            lines.extend(["", "## Cross-layer tensor/command evidence", cross_layer[:6000]])
     stdout = dag.get("stdout", "")
     for pattern, label in (
         (r"(\d+) nodes,\s*(\d+) edges", "instruction_graph"),
@@ -1004,27 +1111,56 @@ def probe_firmware(
     timing_schedule_path = (
         output_dir / "timing-schedule.json" if output_dir is not None else None
     )
+    cross_layer_path = (
+        output_dir / "cross-layer-graph.txt" if output_dir is not None else None
+    )
+    cross_layer_json_path = (
+        output_dir / "cross-layer-graph.json" if output_dir is not None else None
+    )
+    timed_profile = config["probe"].get("timed_device", {}).get("profile")
+    workload_manifest = config["probe"].get("workload_manifest")
     script = f"""
 import json, sys
+from pathlib import Path
 sys.path.insert(0, '.')
 sys.path.insert(0, 'jimu-dse/scripts')
 import numpy as np
 from emulator.npu_device_mini import NpuDeviceMini, MEM_DRAM
+from emulator.npu_device_timed import TimedDeviceProfile, TimedNpuDevice
 from emulator.npu_event_trace import EventTracer
+from emulator.npu_cross_layer_graph import build_cross_layer_graph
+from emulator.firmware_runner import load_initializer
 from emulator.trace_recorder import TraceRecorder
+from emulator.workload import WorkloadManifest
 from iss.mini_rv64 import MiniRV64
 from closed_loop import calculate_cost_metrics
 dim={hw['dim']}; h={hw['hidden']}; sl={seq_len}
+manifest=WorkloadManifest.load({workload_manifest!r}) if {bool(workload_manifest)!r} else None
 npu=NpuDeviceMini(native_dim=dim); npu.set_hidden_size(h); npu.set_seq_len(sl)
 npu._vrf[MEM_DRAM][0:h]=np.zeros(h,dtype=np.float32)
-tracer=EventTracer(npu); rec=TraceRecorder(npu); cpu=MiniRV64()
+initializer=load_initializer(manifest.initializer if manifest else None)
+if initializer:
+    initializer(npu, manifest)
+tracer=EventTracer(npu, manifest=manifest)
+timed=None
+device=npu
+if {bool(timed_profile)!r}:
+    timed=TimedNpuDevice(
+        npu, TimedDeviceProfile.load({timed_profile!r}), manifest=manifest
+    )
+    device=timed
+rec=TraceRecorder(device); cpu=MiniRV64()
 cpu.set_mmio_device(rec); cpu.load_elf('{build['elf']}')
 cpu.run(cycles={config['probe'].get('cycle_limit', 300000)})
+if timed:
+    timed.run_until_idle()
 ds=npu.get_dram_stats()
 total=(ds.get('vec_rd_elements',0)+ds.get('vec_wr_elements',0)+ds.get('mat_rd_elements',0)+ds.get('mat_wr_elements',0))*4
 mv=sum(1 for e in tracer.events if ((e['raw'] if isinstance(e,dict) else e.inst)>>24)&0xFF in (7,27))
 metrics={{'total_bytes':total,'instr_count':len(rec.inst_trace),'mv_mul_count':mv,'mat_rd_ops':ds.get('mat_rd_ops',0),'test_pass':0}}
 metrics.update(calculate_cost_metrics(tracer.events, ds, {config["probe"].get("cost_model")!r}))
+if timed:
+    metrics.update(timed.metrics())
 cycle_model={config["probe"].get("cycle_model")!r}
 if cycle_model:
     import yaml
@@ -1036,6 +1172,22 @@ if cycle_model:
         tracer.events, {{'dim':dim, 'hidden':h}}, timing_profile,
         schedule_path={(str(timing_schedule_path) if timing_schedule_path else None)!r},
     ))
+schedule=timed.timeline if timed else None
+if schedule is None and {str(timing_schedule_path) if timing_schedule_path else None!r}:
+    schedule_file=Path({str(timing_schedule_path) if timing_schedule_path else None!r})
+    if schedule_file.is_file():
+        schedule=json.loads(schedule_file.read_text(encoding='utf-8'))
+if {str(cross_layer_json_path) if cross_layer_json_path else None!r}:
+    graph=build_cross_layer_graph(
+        tracer.events, manifest=manifest, schedule=schedule,
+        profile_name=(timed.profile.name if timed else None),
+    )
+    graph_json=Path({str(cross_layer_json_path) if cross_layer_json_path else None!r})
+    graph_json.parent.mkdir(parents=True, exist_ok=True)
+    graph.write_json(graph_json)
+    Path({str(cross_layer_path) if cross_layer_path else None!r}).write_text(
+        graph.to_text(), encoding='utf-8'
+    )
 print(json.dumps(metrics))
 tracer.unpatch()
 """
@@ -1053,10 +1205,17 @@ tracer.unpatch()
         if timing_schedule_path and timing_schedule_path.is_file()
         else None
     )
+    cross_layer_context = (
+        cross_layer_path.read_text(encoding="utf-8", errors="replace")[:6000]
+        if cross_layer_path and cross_layer_path.is_file()
+        else None
+    )
     probe = {
         "passed": result["exit_code"] == 0 and all(x in metrics for x in wanted if x != "test_pass"),
         "build": build, "process": result, "metrics": metrics, "clusters": [],
-        "graph_context": schedule_context or "(graph generation disabled)",
+        "graph_context": "\n\n".join(
+            item for item in (schedule_context, cross_layer_context) if item
+        ) or "(graph generation disabled)",
         "sequence_length": seq_len,
     }
     if timing_schedule_path and timing_schedule_path.is_file():
@@ -1084,7 +1243,8 @@ tracer.unpatch()
         config_matches = not observed or observed == {seq_len}
         probe["graph_config_matches"] = config_matches
         probe["graph_context"] = _graph_context(
-            dag_dir, config, seq_len, dag, timing_schedule_path
+            dag_dir, config, seq_len, dag, timing_schedule_path,
+            cross_layer_path,
         )
         probe["passed"] = (
             probe["passed"] and dag.get("exit_code") == 0 and config_matches
@@ -1509,7 +1669,6 @@ def execute_run(
     config = copy.deepcopy(config)
     log = progress or (lambda _message: None)
     target = _repo_path(config["target"]["firmware"], "target.firmware")
-    baseline_path = _repo_path(config["target"]["baseline"], "target.baseline")
     original = target.read_bytes()
 
     if resume:
@@ -1551,7 +1710,11 @@ def execute_run(
         run_dir.mkdir(parents=True, exist_ok=False)
         baseline_probe = None
         baseline_metrics = {}
-        best_bytes = baseline_path.read_bytes()
+        # Optimise the firmware the caller actually supplied.  The committed
+        # baseline remains a versioned reference, but silently replacing a
+        # dirty/current target would optimise the wrong program and lose the
+        # user's starting point from candidate artifacts.
+        best_bytes = original
         best_score = 0.0
         no_improvement = 0
         start_iteration = 1

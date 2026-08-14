@@ -1,0 +1,33 @@
+schema_version: 1
+name: generic-firmware-example
+firmware: ../firmware/build/example.elf
+hardware_profile: ../jimu-dse/timing/npu-timed-v1.yaml
+cycle_limit: 300000
+drain_on_halt: true
+metadata:
+  native_dim: 128
+  hidden_size: 128
+  seq_len: 1
+tensors:
+  - name: input
+    address: 0x000
+    length: 128
+    shape: [128]
+    dtype: fp16
+    role: input
+    frozen: false
+  - name: weights
+    address: 0x100
+    length: 16384
+    shape: [128, 128]
+    dtype: fp16
+    role: parameter
+    frozen: true
+  - name: output
+    address: 0x5000
+    length: 128
+    shape: [128]
+    dtype: fp16
+    role: output
+    observable: true
+    tolerance: 0.001

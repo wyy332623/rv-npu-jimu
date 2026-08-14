@@ -14,6 +14,9 @@ concrete DRAM addresses.
 
 from typing import List, Tuple
 
+from emulator.npu_command import decode_executed
+from emulator.workload import SourceLocation, WorkloadManifest
+
 # ── Opcode constants (copied from npu_device_mini.py) ───────────────
 OP_S_WR   = 0;  OP_S_RD   = 1
 OP_V_RD   = 2;  OP_M_RD   = 3
@@ -257,8 +260,10 @@ class EventTracer:
         tracer.unpatch()
     """
 
-    def __init__(self, inner_device):
+    def __init__(self, inner_device,
+                 manifest: WorkloadManifest | None = None):
         self._inner = inner_device
+        self._manifest = manifest
         self.events: list[dict] = []
         self._event_idx = 0
         self._raw_inst = 0  # stores the raw instruction from _push_instruction
@@ -284,25 +289,29 @@ class EventTracer:
                             pipeline=None, vpipe_a=None):
             # Record event BEFORE execution so we capture the
             # instruction dispatch, not the side-effects
-            op_name = _opcode_name(opcode, opd0)
-            defs, uses = _resolve_defs_uses(opcode, opd0, opd1,
-                                            full_operand)
-            raw_opcode = (self._raw_inst >> 24) & 0xFF
-            event = {
-                "idx": self._event_idx,
-                "op": op_name,
-                "opcode": opcode,
-                "raw": self._raw_inst,
-                "raw_instruction_idx": self._raw_instruction_idx,
-                "expanded_idx": self._expanded_idx,
-                "inc_parent_opcode": raw_opcode if raw_opcode in INC_OPCODES else None,
-                "chain_id": self._chain_id,
-                "defs": defs,
-                "uses": uses,
-                "memory": _memory_access(
-                    opcode, full_operand, int(inner_device.native_dim)
-                ),
-            }
+            context = getattr(inner_device, "_cpu_context", {}) or {}
+            source_map = getattr(inner_device, "_source_map", None)
+            source = (
+                source_map.lookup(context.get("pc"))
+                if source_map is not None
+                else SourceLocation(pc=context.get("pc"))
+            )
+            command = decode_executed(
+                command_id=self._event_idx,
+                raw=self._raw_inst,
+                opcode=opcode,
+                opd0=opd0,
+                opd1=opd1,
+                full_operand=full_operand,
+                native_dim=int(inner_device.native_dim),
+                chain_id=self._chain_id,
+                raw_instruction_idx=self._raw_instruction_idx,
+                expanded_idx=self._expanded_idx,
+                source=source,
+                cpu_cycle=context.get("cycle"),
+                manifest=self._manifest,
+            )
+            event = command.to_event()
             self.events.append(event)
             self._event_idx += 1
             self._expanded_idx += 1

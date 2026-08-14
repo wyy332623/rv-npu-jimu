@@ -204,6 +204,23 @@ bash jimu-dse/scripts/npu_closed_loop.sh \
 
 ## SCALE-Sim cycle model
 
+The cycle goal can also enable the native lock-step timing device and a
+workload manifest:
+
+```yaml
+probe:
+  workload_manifest: jimu-dse/workloads/bert-dim4-seq6.yaml
+  timed_device:
+    profile: jimu-dse/timing/npu-timed-v1.yaml
+```
+
+This adds BUSY/DONE/CHAIN_STATUS polling, finite FIFO capacity, scoreboarding,
+unit pipelines, DRAM contention, source provenance, and tensor identities to
+the same probe. Goals for non-BERT firmware may declare `target.build.command`,
+`target.build.elf`, `target.build.cwd`, and optional environment variables;
+template fields include `firmware`, `elf`, `dim`, `hidden`, `num_head`,
+`seq_len`, and `repo`.
+
 Install the optional, pinned timing backend:
 
 ```bash
@@ -260,7 +277,9 @@ bounded summary of the longest critical events, largest waits, wait reasons,
 and resource-utilization ranking. That summary and the exact schedule path are
 included in every scored Agent prompt; the complete event array remains an
 audit artifact instead of consuming prompt space. Dynamic raw instruction
-indexes are available, but they are not direct C source-line numbers.
+indexes remain available. When the ELF contains DWARF line data, command
+events and cross-layer evidence additionally contain the issuing C source
+file, line, function, and PC.
 The metric block is likewise grouped into the scored value, its delta from the
 run baseline, actionable overlap/utilization diagnostics, and the legacy model
 breakdown. Layer counts, diagnostic stall counts, and chain counts remain in

@@ -927,6 +927,36 @@ def test_probe_passes_scoring_sequence_to_graph(monkeypatch, tmp_path):
     assert "parallel_cycles=10" in probe["graph_context"]
 
 
+def test_cycle_goal_enables_unified_timed_and_tensor_evidence():
+    config = closed_loop.load_config("cycle-latency-optimization")
+
+    assert config["probe"]["timed_device"]["profile"].endswith(
+        "npu-timed-v1.yaml"
+    )
+    assert config["probe"]["workload_manifest"].endswith(
+        "bert-dim4-seq6.yaml"
+    )
+    assert "timed_wall_cycles" in config["probe"]["metrics"]
+
+
+def test_generic_target_accepts_declarative_build_command(config):
+    candidate = copy.deepcopy(config)
+    candidate["target"]["build"] = {
+        "command": [
+            "riscv64-unknown-elf-gcc", "{firmware}", "-o", "{elf}",
+        ],
+        "elf": "firmware/build_custom/custom.elf",
+        "cwd": ".",
+        "environment": {"NATIVE_DIM": "{dim}"},
+    }
+
+    closed_loop.validate_config(candidate)
+
+    candidate["target"]["build"]["command"] = "make firmware"
+    with pytest.raises(closed_loop.ConfigError, match="non-empty string list"):
+        closed_loop.validate_config(candidate)
+
+
 def test_dataflow_skill_allows_parallel_reordering():
     skill = (
         ROOT / "jimu-dse" / "docs" / "skills" / "isa"

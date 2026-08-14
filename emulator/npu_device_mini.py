@@ -123,6 +123,8 @@ class NpuDeviceMini:
         self._data = bytearray()
         self._dram_addr = 0
         self._chain_busy = 0    # CHAIN_STATUS: bit0=VMM, bit1=MMM, bit2=MVU
+        self._cpu_context = {}
+        self._source_map = None
 
         self._vrf = {mem: np.zeros(sz, dtype=np.float32)
                      for mem, sz in VRF_SIZES.items()}
@@ -176,6 +178,16 @@ class NpuDeviceMini:
 
     def get_dram_stats(self):
         return dict(self._dram_stats)
+
+    def set_cpu_context(self, *, pc=None, cycle=None, inst_count=None):
+        """Attach ISS provenance to the next MMIO-triggered NPU command."""
+        self._cpu_context = {
+            "pc": pc, "cycle": cycle, "inst_count": inst_count,
+        }
+
+    def set_source_map(self, source_map):
+        """Install a best-effort ELF PC-to-source map for EventTracer."""
+        self._source_map = source_map
 
     NPU_DRAM_BASE = 0x40
     NPU_DRAM_END  = 0x8000

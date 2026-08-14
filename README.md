@@ -58,6 +58,21 @@ python3 jimu-dse/scripts/closed_loop.py validate-config \
 See `jimu-dse/docs/how-to-run.md` for the goal schema, scoring, skills,
 resume behavior, and run artifacts.
 
+For arbitrary firmware supported by the ISS/NPU emulator, a workload manifest
+can attach tensor semantics and observable output ranges to the executed
+command stream. The lock-step timed device then exposes FIFO, scoreboard,
+execution-unit, and DRAM contention while reusing the functional emulator as
+the correctness oracle:
+
+```bash
+python3 scripts/analyze_firmware.py \
+  --manifest path/to/workload.yaml \
+  -o _out/firmware-analysis
+```
+
+See `docs/unified-firmware-optimization.md` for the manifest, custom build,
+cross-layer graph, agent evidence, and calibration contracts.
+
 ## Running Tests
 
 ```bash
@@ -78,6 +93,10 @@ kernels/         C compute library (libnpukernels.so)
 firmware/        RISC-V firmware (C, bare-metal ELF → bert.elf)
 emulator/
   npu_device_mini.py  NPU device — functional Python emulator
+  npu_device_timed.py Lock-step FIFO/scoreboard/resource timing wrapper
+  npu_command.py      Canonical decoded command and memory-access model
+  workload.py         Tensor/observable manifest and ELF source mapping
+  npu_cross_layer_graph.py  Tensor → command → timing evidence graph
   trace_recorder.py   MMIO instruction trace recorder
 iss/
   mini_rv64.py        MiniRV64 ISS (RV64IM, pure Python)
@@ -95,6 +114,7 @@ jimu-dse/        Closed-loop firmware optimization pipeline
 | `docs/firmware-guide.md` | RISC-V firmware, driver API |
 | `docs/test-guide.md` | Test pyramid, fixtures, CI |
 | `docs/build-guide.md` | Tool installation, build steps |
+| `docs/unified-firmware-optimization.md` | Generic firmware timing, tensor semantics, graphs, and agent evidence |
 
 ## License
 

@@ -39,6 +39,25 @@
 #define SEND_SI(op, opd0, opd1) npu_send_inst(SI(op, opd0, opd1))
 #define SEND_LO(op, adr)        npu_send_inst(LO(op, adr))
 
+/* ── Single-tile VRF parameter cache ────────────────────────────────
+ * All projection biases and LayerNorm gamma/beta vectors are streamed
+ * into MEM_MVM_ACC_VRF (bank 13, 256 elements, otherwise unused in
+ * single-tile mode) once before the K/V/Q phases.  Every in-loop bias
+ * load then reads the 1-cycle VRF cache instead of a 3-cycle DRAM
+ * transfer, and the phase-5 gamma/beta loads are hoisted into the
+ * pre-compute slot so no LN input staging round trip is needed.
+ * Only valid when num_tiles == 1; multi-tile keeps the DRAM path. */
+#define CACHE_K_BIAS     (0 * NATIVE_DIM)
+#define CACHE_V_BIAS     (1 * NATIVE_DIM)
+#define CACHE_Q_BIAS     (2 * NATIVE_DIM)
+#define CACHE_BO         (3 * NATIVE_DIM)
+#define CACHE_BI         (4 * NATIVE_DIM)
+#define CACHE_BO2        (5 * NATIVE_DIM)
+#define CACHE_LN1_GAMMA  (6 * NATIVE_DIM)
+#define CACHE_LN1_BETA   (7 * NATIVE_DIM)
+#define CACHE_LN2_GAMMA  (8 * NATIVE_DIM)
+#define CACHE_LN2_BETA   (9 * NATIVE_DIM)
+
 /* ── Tile Configuration ─────────────────────────────────────────────
  * For multi-tile operation, each M_RD_DRAM loads exactly one tile
  * (NATIVE_DIM × NATIVE_DIM elements).  The firmware loop iterates
@@ -67,7 +86,6 @@
  *   0x600                                    : SCRATCH_Z
  *   0x620                                    : SCRATCH_LN1
  *   0x640                                    : SCRATCH_GELU
- *   0x700                                    : save_res
  *   0x800                                    : save_out
  */
 #define SAVE_Q_BASE      0x200
@@ -77,9 +95,7 @@
 #define SCRATCH_Z        0x600
 #define SCRATCH_LN1      0x620
 #define SCRATCH_GELU     0x640
-#define SAVE_RES_BASE    0x700
 #define SAVE_OUT_BASE    0x800
-#define SO_SCRATCH       0x580  /* temp storage for SO during residual add */
 #define UNIT_VEC_BASE    0x900  /* identity-matrix rows for V.T re-transpose */
 
 
@@ -91,6 +107,61 @@ static void m_init_bias_accumulators(void)
 {
     SEND_SI(OP_V_RD, MEM_FILL, 0);
     SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, 0);
+}
+
+
+/* ── cache_bias_layernorm_params ─────────────────────────────────
+ *
+ * Single-tile only: preload every projection bias and LN gamma/beta
+ * vector from DRAM into the MVM_ACC_VRF cache once.  Each vector is
+ * NATIVE_DIM elements; the pipeline semantics (V_RD_DRAM loads pipe,
+ * V_WR writes pipe and keeps it) preserve bit-identical fp16 values.
+ */
+static void cache_bias_layernorm_params(void)
+{
+    SEND_LO(OP_V_RD_DRAM, _PROJ_BASE + _STRIDE + _MAT_SIZE);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_K_BIAS);
+    SEND_LO(OP_V_RD_DRAM, _PROJ_BASE + 2 * _STRIDE + _MAT_SIZE);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_V_BIAS);
+    SEND_LO(OP_V_RD_DRAM, _PROJ_BASE + _MAT_SIZE);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_Q_BIAS);
+    SEND_LO(OP_V_RD_DRAM, _PROJ_BASE + 3 * _STRIDE + _MAT_SIZE);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_BO);
+    SEND_LO(OP_V_RD_DRAM, _PROJ_BASE + 4 * _STRIDE + _MAT_SIZE);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_BI);
+    SEND_LO(OP_V_RD_DRAM, _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_BO2);
+    SEND_LO(OP_V_RD_DRAM, _LN1_GAMMA);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_LN1_GAMMA);
+    SEND_LO(OP_V_RD_DRAM, _LN1_BETA);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_LN1_BETA);
+    SEND_LO(OP_V_RD_DRAM, _LN2_GAMMA);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_LN2_GAMMA);
+    SEND_LO(OP_V_RD_DRAM, _LN2_BETA);
+    SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, CACHE_LN2_BETA);
+}
+
+
+/* ── proj_single_tile ────────────────────────────────────────────
+ *
+ * Single-tile projection: W × x + b written straight to DRAM.
+ * The input vector streams from DRAM through MV_MUL (no IVRF round
+ * trip), the bias is read from the VRF cache, and the biased result
+ * is written directly from the pipeline — dropping the per-position
+ * V_WR IVRF, accumulator V_WR/V_RD, and save_row_tiles V_RD.
+ */
+static void proj_single_tile(uint32_t mat_base, uint32_t vec_base,
+                             uint32_t bias_cache_off, uint32_t save_addr,
+                             uint32_t load_weight)
+{
+    SEND_LO(OP_V_RD_DRAM, vec_base);
+    if (load_weight) {
+        SEND_LO(OP_M_RD_DRAM, mat_base);
+    }
+    SEND_SI(OP_MV_MUL, 0, 0);
+    SEND_SI(OP_V_RD, MEM_MVM_ACC_VRF, bias_cache_off);
+    SEND_SI(OP_VV_ADD, 0, 0);
+    SEND_LO(OP_V_WR_DRAM, save_addr);
 }
 
 
@@ -108,49 +179,68 @@ static void m_init_bias_accumulators(void)
  *   sink_vrf       — VRF target for accumulated result (MEM_MVM_ACC_VRF)
  */
 static void mvm_tiled_q(uint32_t mat_dram_base, uint32_t vec_dram_base,
-                         uint32_t num_tiles, uint32_t bias_dram_base)
+                         uint32_t num_tiles, uint32_t bias_dram_base,
+                         uint32_t load_weight)
 {
     uint32_t tr, tc;
 
-    /* Force single-tile per M_RD_DRAM: hardware loads 8×8 = 64 elements */
-    SEND_SI(OP_S_WR, REG_TILE_ROWS_ADDR, 1);
-    SEND_SI(OP_S_WR, REG_TILE_COLS_ADDR, 1);
-    SEND_SI(OP_S_WR, REG_ITERATIONS_ADDR, 1);
+    /* Force single-tile per M_RD_DRAM: hardware loads 8×8 = 64 elements.
+     * In single-tile mode (num_tiles == 1) the layer-start configuration
+     * already sets REG_TILE_ROWS/COLS to 1, so re-writing these scalar
+     * registers on every call is redundant.  Only the multi-tile path
+     * needs to reset them to 1 for each tile load. */
+    if (num_tiles > 1) {
+        SEND_SI(OP_S_WR, REG_TILE_ROWS_ADDR, 1);
+        SEND_SI(OP_S_WR, REG_TILE_COLS_ADDR, 1);
+        SEND_SI(OP_S_WR, REG_ITERATIONS_ADDR, 1);
+    }
 
     /* Initialize accumulators: tr=0 uses VRF_ADDSUB_0, tr=1 uses VRF_ADDSUB_2.
+     * Only needed in multi-tile mode where the second tile column
+     * accumulates on top of the first.  In single-tile mode the result
+     * simply overwrites VRF_ADDSUB_0.
      * VRF_ADDSUB_1 (mem 8) is reserved as a cache for X data so that the
-     * second and third calls to mvm_tiled_q (for V and Q projections of
-     * the same position) can read X from VRF instead of re-loading from DRAM. */
-    SEND_SI(OP_V_RD, MEM_FILL, 0);
-    SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);
+     * tile-row loop (and, for K/V/Q projections, subsequent calls for the
+     * same position) can read X from VRF instead of DRAM. */
     if (num_tiles > 1) {
+        SEND_SI(OP_V_RD, MEM_FILL, 0);
+        SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);
         SEND_SI(OP_V_RD, MEM_FILL, 0);
         SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_2, 0);
     }
 
     /* Column-major tile loop: for each tile column, load X chunk once
-     * from DRAM and cache it in VRF_ADDSUB_1 (mem 8).  All tile-rows
-     * for this column read X from the cache instead of re-loading
-     * from DRAM, eliminating redundant DRAM reads. */
+     * from DRAM.  In single-tile mode the pipeline carries X straight
+     * through M_RD_DRAM into MV_MUL, so the ADDSUB_1 cache round-trip
+     * is dropped entirely.  In multi-tile mode X is cached in ADDSUB_1
+     * and reloaded for tile rows after the first, whose MV_MUL consumes
+     * the pipeline. */
     for (tc = 0; tc < num_tiles; tc++) {
-        /* Load input chunk X[tc*NATIVE_DIM .. end) from DRAM once */
         uint32_t vec_chunk_addr = vec_dram_base + tc * NATIVE_DIM;
         SEND_LO(OP_V_RD_DRAM, vec_chunk_addr);
         SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
-        /* Save a copy to VRF_ADDSUB_1 for all tile-rows AND subsequent calls */
-        SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
-        SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
+        if (num_tiles > 1) {
+            SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
+        }
 
         for (tr = 0; tr < num_tiles; tr++) {
-            /* Load weight tile [tr][tc] from DRAM into MRF */
+            /* Load weight tile [tr][tc] from DRAM into MRF.
+             * M_RD_DRAM loads the MRF directly and preserves the
+             * pipeline (X), so no M_WR or X reload is needed.
+             * When load_weight == 0 the tile is already resident in
+             * MRF (loaded once for position 0 and unchanged since, as
+             * nothing else writes MRF between positions), so the load
+             * is skipped entirely. */
             uint32_t tile_dram_addr = mat_dram_base + (tr * num_tiles + tc) * MAT_SIZE;
-            SEND_LO(OP_M_RD_DRAM, tile_dram_addr);
-            SEND_SI(OP_M_WR, MEM_MATRIX_RF, 0);
-
-            /* Load X chunk from cache VRF_ADDSUB_1 into MVM input */
-            SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
-            SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
-            SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
+            if (load_weight) {
+                SEND_LO(OP_M_RD_DRAM, tile_dram_addr);
+            }
+            if (tr > 0) {
+                /* Reload X from the cache; IVRF must be refreshed for
+                 * the MVM-input semantics after the V_RD. */
+                SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
+                SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
+            }
 
             /* MVM: tile × vec_chunk → pipeline */
             SEND_SI(OP_MV_MUL, 0, 0);
@@ -159,8 +249,13 @@ static void mvm_tiled_q(uint32_t mat_dram_base, uint32_t vec_dram_base,
              * tr=0 → VRF_ADDSUB_0, tr=1 → VRF_ADDSUB_2 */
             uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_2;
             if (tc == 0) {
-                /* First col-tile: store directly (no add needed) */
-                SEND_SI(OP_V_WR, acc_vrf, 0);
+                /* First col-tile: in single-tile mode the result is left
+                 * in the pipeline (V_WR keeps it) and the bias add below
+                 * reads it straight from there — no store needed.  The
+                 * multi-tile path stores to seed the accumulation. */
+                if (num_tiles > 1) {
+                    SEND_SI(OP_V_WR, acc_vrf, 0);
+                }
             } else {
                 /* Subsequent col-tiles: load prev, add, store back */
                 SEND_SI(OP_V_WR, MEM_MULTIPLY_VRF, 0);       /* save new result */
@@ -175,10 +270,19 @@ static void mvm_tiled_q(uint32_t mat_dram_base, uint32_t vec_dram_base,
     /* Add bias per tile-row */
     for (tr = 0; tr < num_tiles; tr++) {
         uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_2;
-        SEND_SI(OP_V_RD, acc_vrf, 0);                              /* load accumulated → vpipe_a */
-        SEND_LO(OP_V_RD_DRAM, bias_dram_base + tr * NATIVE_DIM);   /* load bias chunk → pipeline */
-        SEND_SI(OP_VV_ADD, 0, 0);                                   /* pipeline = vpipe_a + bias */
-        SEND_SI(OP_V_WR, acc_vrf, 0);                               /* store result with bias */
+        if (num_tiles == 1) {
+            /* Single-tile: the MV_MUL result is still in the pipeline
+             * (V_WR keeps it), so the pre-bias V_RD is redundant and
+             * dropped.  VV_ADD reads pipe (bias) + vpipe_a (result). */
+            SEND_LO(OP_V_RD_DRAM, bias_dram_base + tr * NATIVE_DIM);
+            SEND_SI(OP_VV_ADD, 0, 0);
+            SEND_SI(OP_V_WR, acc_vrf, 0);
+        } else {
+            SEND_SI(OP_V_RD, acc_vrf, 0);                              /* load accumulated → vpipe_a */
+            SEND_LO(OP_V_RD_DRAM, bias_dram_base + tr * NATIVE_DIM);   /* load bias chunk → pipeline */
+            SEND_SI(OP_VV_ADD, 0, 0);                                   /* pipeline = vpipe_a + bias */
+            SEND_SI(OP_V_WR, acc_vrf, 0);                               /* store result with bias */
+        }
     }
 
     /* Move tr=1 accumulator from VRF_ADDSUB_2 back to VRF_ADDSUB_1
@@ -189,6 +293,26 @@ static void mvm_tiled_q(uint32_t mat_dram_base, uint32_t vec_dram_base,
     }
 }
 
+/* ── mvm_vrf_q ──────────────────────────────────────────────────
+ *
+ * Single-tile MVM whose input vector already lives in ADDSUB_VRF_0.
+ * Equivalent to mvm_tiled_q for num_tiles == 1 but sources the input
+ * from VRF instead of DRAM, dropping the SCRATCH_LN1/SCRATCH_GELU
+ * store+reload round trips in phase 5.  Only valid for single-tile:
+ * the ADDSUB_VRF_1 X-cache slot is not free in multi-tile mode.
+ */
+static void mvm_vrf_q(uint32_t mat_dram_base, uint32_t bias_dram_base)
+{
+    SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);   /* input → pipe */
+    SEND_LO(OP_M_RD_DRAM, mat_dram_base);    /* weight tile → MRF */
+    SEND_SI(OP_MV_MUL, 0, 0);                /* MRF × input → pipe */
+    SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);   /* result → ADDSUB_VRF_0 */
+    SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);   /* result → vpipe_a */
+    SEND_LO(OP_V_RD_DRAM, bias_dram_base);   /* bias → pipe */
+    SEND_SI(OP_VV_ADD, 0, 0);                /* result + bias → pipe */
+    SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);   /* biased result → ADDSUB_VRF_0 */
+}
+
 static void save_row_tiles(uint32_t num_tiles, uint32_t dram_base,
                             uint32_t vrf_first, uint32_t vrf_second)
 {
@@ -197,19 +321,6 @@ static void save_row_tiles(uint32_t num_tiles, uint32_t dram_base,
         uint32_t vrf = (tr == 0) ? vrf_first : vrf_second;
         SEND_SI(OP_V_RD, vrf, 0);
         SEND_LO(OP_V_WR_DRAM, dram_base + tr * 8);
-    }
-}
-
-static void load_and_add_row_tiles(uint32_t num_tiles, uint32_t dram_base,
-                                    uint32_t vrf_first, uint32_t vrf_second)
-{
-    uint32_t tr;
-    for (tr = 0; tr < num_tiles; tr++) {
-        uint32_t vrf = (tr == 0) ? vrf_first : vrf_second;
-        SEND_SI(OP_V_RD, vrf, 0);
-        SEND_LO(OP_V_RD_DRAM, dram_base + tr * 8);
-        SEND_SI(OP_VV_ADD, 0, 0);
-        SEND_SI(OP_V_WR, vrf, 0);
     }
 }
 
@@ -226,6 +337,26 @@ static void apply_layernorm(uint32_t num_tiles,
 {
     uint32_t tr;
     uint32_t ln_scratch = scratch_addr + num_tiles * 8; /* extra scratch for tile 0 */
+
+    /* Single-tile fast path: ADDSUB_VRF_1 is spare (only used as the
+     * X cache in multi-tile mode), so stage the input tile there while
+     * gamma/beta load into IVRF/ADDSUB_VRF_0.  This drops two DRAM
+     * round trips per call: the scratch save+reload of the input tile
+     * and the tile-0 ln_scratch save/restore that only exists because a
+     * second tile's beta load would clobber ADDSUB_VRF_0. */
+    if (num_tiles == 1) {
+        SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);   /* input tile → pipe */
+        SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);   /* stage copy in ADDSUB_VRF_1 */
+        SEND_LO(OP_V_RD_DRAM, ln_gamma_addr);    /* gamma → pipe */
+        SEND_SI(OP_V_WR, 5, 0);                  /* gamma → IVRF */
+        SEND_LO(OP_V_RD_DRAM, ln_beta_addr);     /* beta → pipe */
+        SEND_SI(OP_V_WR, 7, 0);                  /* beta → ADDSUB_VRF_0 */
+        SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);   /* reload input tile → pipe */
+        SEND_SI(OP_V_FUNC, SUB_LAYERNORM, 0);
+        SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);   /* normalized → ADDSUB_VRF_0 */
+        return;
+    }
+
     for (tr = 0; tr < num_tiles; tr++) {
         uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
         uint32_t stride = 8;
@@ -276,9 +407,18 @@ static void compute_k_all_positions(
     uint32_t pos;
     for (pos = 0; pos < seq_len; pos++) {
         uint32_t x_base = pos * hidden_size;
-        mvm_tiled_q(k_base, x_base, num_tiles, k_bias);
-        save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
-                        MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+        if (num_tiles == 1) {
+            proj_single_tile(k_base, x_base, CACHE_K_BIAS,
+                             SAVE_K_BASE + pos * num_tiles * 8,
+                             (pos == 0) ? 1 : 0);
+        } else {
+            /* The K weight tile is loaded into MRF once (position 0) and
+             * reused for every subsequent position — nothing else writes
+             * MRF in this loop, so the reload is skipped. */
+            mvm_tiled_q(k_base, x_base, num_tiles, k_bias, (pos == 0) ? 1 : 0);
+            save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
+                            MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+        }
     }
 }
 
@@ -294,129 +434,136 @@ static void compute_v_all_positions(
     uint32_t pos;
     for (pos = 0; pos < seq_len; pos++) {
         uint32_t x_base = pos * hidden_size;
-        mvm_tiled_q(v_base, x_base, num_tiles, v_bias);
-        save_row_tiles(num_tiles, SAVE_V_BASE + pos * num_tiles * 8,
-                        MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+        if (num_tiles == 1) {
+            proj_single_tile(v_base, x_base, CACHE_V_BIAS,
+                             SAVE_V_BASE + pos * num_tiles * 8,
+                             (pos == 0) ? 1 : 0);
+        } else {
+            mvm_tiled_q(v_base, x_base, num_tiles, v_bias, (pos == 0) ? 1 : 0);
+            save_row_tiles(num_tiles, SAVE_V_BASE + pos * num_tiles * 8,
+                            MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+        }
     }
 }
 
-/* ── dot_product_attention ─────────────────────────────────────
+/* ── compute_q_all_positions ───────────────────────────────────
  *
- * For a single query position, compute dot-product attention:
- *   1. Compute Q = Wq × X[pos] + bq
- *   2. For each head h, build K.T MRF tile from pre-saved K
- *   3. Score = MV_MUL(K.T, Q_h) → [seq_len] score vector
- *   4. Softmax → prob vector
- *   5. Build V.T MRF tile from pre-saved V
- *   6. Context = MV_MUL(V.T, prob) → [head_size] context vector
- *   7. Accumulate context into Z with write vector mask
- *
- * K and V must already be saved in DRAM at SAVE_K_BASE and SAVE_V_BASE.
+ * Compute Q = Wq × X[pos] + bq for ALL positions and save to DRAM.
+ * Q[pos] depends only on X[pos], so all positions can be projected
+ * up front (before attention), matching the K/V phases.
  */
-static void dot_product_attention(
-    uint32_t pos, uint32_t hidden_size, uint32_t num_tiles,
-    uint32_t q_base, uint32_t q_bias,
-    uint32_t num_head)
+static void compute_q_all_positions(
+    uint32_t seq_len, uint32_t hidden_size, uint32_t num_tiles,
+    uint32_t q_base, uint32_t q_bias)
 {
-    uint32_t x_base = pos * hidden_size;
-    uint32_t head_size = hidden_size / num_head;
-    uint32_t heads_per_tile = NATIVE_DIM / head_size;
-    uint32_t tr, h;
-
-    /* Compute Q for this position and save */
-    mvm_tiled_q(q_base, x_base, num_tiles, q_bias);
-    save_row_tiles(num_tiles, SAVE_Q_BASE + pos * num_tiles * 8,
-                    MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
-
-    /* Zero the context accumulator per row-tile */
-    for (tr = 0; tr < num_tiles; tr++) {
-        uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
-        SEND_SI(OP_V_RD, MEM_FILL, 0);
-        SEND_SI(OP_V_WR, acc_vrf, 0);
+    uint32_t pos;
+    for (pos = 0; pos < seq_len; pos++) {
+        uint32_t x_base = pos * hidden_size;
+        if (num_tiles == 1) {
+            proj_single_tile(q_base, x_base, CACHE_Q_BIAS,
+                             SAVE_Q_BASE + pos * num_tiles * 8,
+                             (pos == 0) ? 1 : 0);
+        } else {
+            mvm_tiled_q(q_base, x_base, num_tiles, q_bias, (pos == 0) ? 1 : 0);
+            save_row_tiles(num_tiles, SAVE_Q_BASE + pos * num_tiles * 8,
+                            MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+        }
     }
+}
 
+/* ── attention_scores_all_positions ─────────────────────────────
+ *
+ * For every query position, compute score = K.T @ Q[pos] and softmax,
+ * saving the probability vector to DRAM scratch.
+ *
+ * The K.T tile for a tile row depends only on the key positions and the
+ * tile row (not the query position), so it is built ONCE per tile row and
+ * shared across all query positions.  All heads within a tile row share
+ * the identical K.T tile and query vector (no instruction below depends
+ * on the head), so the score/prob is bit-identical per head and computed
+ * once.
+ */
+static void attention_scores_all_positions(
+    uint32_t seq_len, uint32_t hidden_size, uint32_t num_tiles)
+{
+    uint32_t tr, pos, p, pad;
     for (tr = 0; tr < num_tiles; tr++) {
-        uint32_t acc_vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
-        for (h = 0; h < heads_per_tile; h++) {
-            uint32_t p, pad, j;
+        /* ── Build K.T MRF tile ── */
+        for (p = 0; p < _SEQ_LEN; p++) {
+            SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
+            SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
+        }
+        /* Zero-pad remaining rows to NATIVE_DIM */
+        for (pad = _SEQ_LEN; pad < NATIVE_DIM; pad++) {
+            SEND_SI(OP_V_RD, MEM_FILL, 0);
+            SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
+        }
+        /* Transfer row buffer to MRF */
+        SEND_SI(OP_M_RD, MEM_VEC_TO_MAT_ROW, 0);
 
-            /* ── Build K.T MRF tile for head h ── */
-            for (p = 0; p < _SEQ_LEN; p++) {
-                SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-                SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
-                SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
-            }
-            /* Zero-pad remaining rows to NATIVE_DIM */
-            for (pad = _SEQ_LEN; pad < NATIVE_DIM; pad++) {
-                SEND_SI(OP_V_RD, MEM_FILL, 0);
-                SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
-            }
-            /* Transfer row buffer to MRF */
-            SEND_SI(OP_M_RD, MEM_VEC_TO_MAT_ROW, 0);
-
-            /* ── Score = K.T @ Q_h → [seq_len] ── */
-            SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
+        /* ── Score + softmax for every query position ── */
+        for (pos = 0; pos < seq_len; pos++) {
             SEND_LO(OP_V_RD_DRAM, SAVE_Q_BASE + pos * num_tiles * 8 + tr * 8);
-            SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
-            SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
             SEND_SI(OP_MV_MUL, 0, 0);
             /* Pipeline: score[i] = K[pos_i, head_h] · Q[head_h] */
-            SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-
-            /* ── Softmax across key positions ── */
             SEND_SI(OP_V_FUNC, SUB_SOFTMAX, 0);
-            /* Save prob to DRAM scratch — V.T build overwrites
-             * both pipeline and IVRF (via V_RD_DRAM auto-store). */
-            SEND_LO(OP_V_WR_DRAM, SCRATCH_ADDR);
+            /* Save prob to DRAM scratch — V.T build overwrites both
+             * pipeline and IVRF (via V_RD_DRAM auto-store). */
+            SEND_LO(OP_V_WR_DRAM, SCRATCH_ADDR + pos * num_tiles * 8 + tr * 8);
+        }
+    }
+}
 
-            /* ── Build V.T MRF tile for head h (element-major) ──
-             * Step 1: Build V position-major into MRF */
-            for (p = 0; p < _SEQ_LEN; p++) {
-                SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-                SEND_LO(OP_V_RD_DRAM, SAVE_V_BASE + p * num_tiles * 8 + tr * 8);
-                SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
-            }
-            for (pad = _SEQ_LEN; pad < NATIVE_DIM; pad++) {
-                SEND_SI(OP_V_RD, MEM_FILL, 0);
-                SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
-            }
-            /* Restore read mask before M_RD so subsequent V_RD_DRAM
-             * (e.g., in mvm_tiled_q) read all elements. */
-            SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-            SEND_SI(OP_M_RD, MEM_VEC_TO_MAT_ROW, 0);
-            /* MRF now has V in position-major order.
-             * Step 2: Re-transpose by extracting columns via unit vectors.
-             * For each element j (0..head_size-1), MV_MUL(V, e_j)
-             * extracts column j of V → pipeline gets [V[0,j], V[1,j], ...].
-             * Write this column as row j of V.T via VecToMatRow. */
-            for (j = 0; j < head_size; j++) {
-                /* Load unit vector e_j from DRAM into IVRF */
-                SEND_LO(OP_V_RD_DRAM, UNIT_VEC_BASE + j * NATIVE_DIM);
-                SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
-                SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
-                /* MV_MUL: extract column j of V → pipeline gets V[:,j] */
-                SEND_SI(OP_MV_MUL, 0, 0);
-                /* Write this column as row j of V.T via VecToMatRow */
-                SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
-            }
-            /* Zero-pad remaining rows of V.T */
-            for (pad = head_size; pad < NATIVE_DIM; pad++) {
-                SEND_SI(OP_V_RD, MEM_FILL, 0);
-                SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
-            }
-            /* Transfer V.T row buffer to MRF */
-            SEND_SI(OP_M_RD, MEM_VEC_TO_MAT_ROW, 0);
-
-            /* ── Context = V.T @ prob → [head_size] ── */
-            SEND_LO(OP_V_RD_DRAM, SCRATCH_ADDR);
-            SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
-            SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
+/* ── attention_contexts_all_positions ────────────────────────────
+ *
+ * For every query position, compute context = V.T @ prob[pos] and save
+ * it directly to Z scratch (contiguous per position).
+ *
+ * The V.T tile for a tile row depends only on the tile row, so it is
+ * built ONCE per tile row and shared across all query positions.
+ */
+static void attention_contexts_all_positions(
+    uint32_t seq_len, uint32_t hidden_size, uint32_t num_tiles,
+    uint32_t num_head)
+{
+    uint32_t head_size = hidden_size / num_head;
+    uint32_t tr, pos, p, pad, j;
+    for (tr = 0; tr < num_tiles; tr++) {
+        /* ── Build V position-major into MRF ── */
+        for (p = 0; p < _SEQ_LEN; p++) {
+            SEND_LO(OP_V_RD_DRAM, SAVE_V_BASE + p * num_tiles * 8 + tr * 8);
+            SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
+        }
+        for (pad = _SEQ_LEN; pad < NATIVE_DIM; pad++) {
+            SEND_SI(OP_V_RD, MEM_FILL, 0);
+            SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
+        }
+        SEND_SI(OP_M_RD, MEM_VEC_TO_MAT_ROW, 0);
+        /* MRF now has V in position-major order.
+         * Re-transpose by extracting columns via unit vectors:
+         * MV_MUL(V, e_j) extracts column j of V → pipeline gets
+         * [V[0,j], V[1,j], ...], written as row j of V.T. */
+        for (j = 0; j < head_size; j++) {
+            SEND_LO(OP_V_RD_DRAM, UNIT_VEC_BASE + j * NATIVE_DIM);
             SEND_SI(OP_MV_MUL, 0, 0);
-            /* Pipeline: context[j] = sum_pos V[pos, head_h, j] * prob[pos] */
+            SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
+        }
+        /* Zero-pad remaining rows of V.T */
+        for (pad = head_size; pad < NATIVE_DIM; pad++) {
+            SEND_SI(OP_V_RD, MEM_FILL, 0);
+            SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
+        }
+        /* Transfer V.T row buffer to MRF */
+        SEND_SI(OP_M_RD, MEM_VEC_TO_MAT_ROW, 0);
 
-            /* ── Accumulate into Z with write mask ── */
-            SEND_SI(OP_S_WR, REG_WRITE_VECTOR_MASK, 0xFF);
-            SEND_SI(OP_V_WR, acc_vrf, 0);
+        /* ── Context for every query position, saved straight to Z ── */
+        for (pos = 0; pos < seq_len; pos++) {
+            SEND_LO(OP_V_RD_DRAM, SCRATCH_ADDR + pos * num_tiles * 8 + tr * 8);
+            SEND_SI(OP_MV_MUL, 0, 0);
+            /* Pipeline: context[j] = sum_pos V[pos, head_h, j] * prob[pos].
+             * V_WR_DRAM keeps the pipeline; the context is identical for
+             * every head in this tile row. */
+            SEND_LO(OP_V_WR_DRAM, SCRATCH_Z + pos * hidden_size + tr * NATIVE_DIM);
         }
     }
 }
@@ -426,10 +573,12 @@ static void dot_product_attention(
  * Full BERT encoder layer: attention + self-output + FFN.
  * When num_tiles > 1, projections use the multi-tile tile loop.
  *
- * Restructured for dot-product attention:
+ * Phase structure:
  *   Phase 1: Compute K and V for all positions
- *   Phase 2: For each query position, compute Q and dot-product attention
- *   Phase 3: Self-output, residual, LayerNorm, FFN (per position)
+ *   Phase 2: Compute Q for all positions
+ *   Phase 3: Attention scores (K.T tile built once per tile row)
+ *   Phase 4: Attention contexts (V.T tile built once per tile row)
+ *   Phase 5: Per-position self-output, residual, LayerNorm, FFN
  */
 void bert_encoder_layer(
     uint32_t seq_len,
@@ -448,6 +597,11 @@ void bert_encoder_layer(
     SEND_SI(OP_S_WR, REG_TILE_COLS, num_tiles);
     SEND_SI(OP_S_WR, REG_ITERATIONS, seq_len);
     SEND_SI(OP_S_WR, REG_READ_MATRIX_MASK, 0xFF);
+    /* Vector read/write masks are always 0xFF in this firmware; configure
+     * them once here instead of re-issuing the identical S_WR before every
+     * K/V/Q load in the attention tile builds. */
+    SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
+    SEND_SI(OP_S_WR, REG_WRITE_VECTOR_MASK, 0xFF);
 
     /* ════════════════════════════════════════════════════════════
      * 2.  FILL + BIAS INIT
@@ -456,87 +610,186 @@ void bert_encoder_layer(
     SEND_SI(OP_V_WR, MEM_MVM_ACC_VRF, 0);
     SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
 
+    /* Single-tile only: preload biases and LN params into VRF so the
+     * per-position loops read the 1-cycle cache instead of DRAM. */
+    if (num_tiles == 1) {
+        cache_bias_layernorm_params();
+    }
+
     /* ── Phase 1: Compute K and V for all positions ── */
         compute_k_all_positions(seq_len, hidden_size, num_tiles,
             _PROJ_BASE + _STRIDE, _PROJ_BASE + _STRIDE + _MAT_SIZE);
         compute_v_all_positions(seq_len, hidden_size, num_tiles,
             _PROJ_BASE + 2 * _STRIDE, _PROJ_BASE + 2 * _STRIDE + _MAT_SIZE);
 
-        /* ── Phase 2+3: Per-query-position attention + rest ── */
+        /* ── Phase 2: Compute Q for all positions ── */
+        compute_q_all_positions(seq_len, hidden_size, num_tiles,
+            _PROJ_BASE, _PROJ_BASE + _MAT_SIZE);
+
+        /* ── Phase 3: Attention scores — K.T tile shared per tile row ── */
+        attention_scores_all_positions(seq_len, hidden_size, num_tiles);
+
+        /* ── Phase 4: Attention contexts — V.T tile shared per tile row.
+         * Contexts are saved straight to Z scratch (contiguous per
+         * position) for the self-output projection. ── */
+        attention_contexts_all_positions(seq_len, hidden_size, num_tiles,
+                                         num_head);
+
+        /* ── Phase 5: Per-query-position self-output + FFN ── */
         uint32_t _pos;
         for (_pos = 0; _pos < seq_len; _pos++) {
             uint32_t x_base = _pos * hidden_size;
-
-            /* Compute Q and dot-product attention, result in ADDSUB_VRFs */
-            dot_product_attention(_pos, hidden_size, num_tiles,
-                _PROJ_BASE, _PROJ_BASE + _MAT_SIZE, num_head);
-
-            /* Save attention context Z to DRAM scratch (contiguous,
-             * not stride-8, so mvm_tiled_q loads tile columns correctly). */
             uint32_t tr;
-            for (tr = 0; tr < num_tiles; tr++) {
-                uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
-                SEND_SI(OP_V_RD, vrf, 0);
-                SEND_LO(OP_V_WR_DRAM, SCRATCH_Z + tr * NATIVE_DIM);
-            }
 
+            if (num_tiles == 1) {
+                /* ── Single-tile fast path ─────────────────────────
+                 * Pipeline semantics used (V_WR keeps the pipeline;
+                 * V_RD moves the previous pipeline into vpipe_a):
+                 *   MV_MUL → pipe = W·x
+                 *   V_RD bias → vpipe_a = W·x, pipe = bias
+                 *   VV_ADD → pipe = W·x + bias
+                 * so every pre-bias V_WR/V_RD round trip in mvm_tiled_q
+                 * is dropped.  V_FUNC (LN/GELU) leaves its result in the
+                 * pipe AND refreshes IVRF, so the following MV_MUL reads
+                 * it straight from the pipe.  LN1 gamma/beta are hoisted
+                 * to the top of each position (read from the VRF cache)
+                 * so the LN1 input never needs a staging round trip;
+                 * LN2 gamma/beta are loaded while the GELU result is
+                 * staged in ADDSUB_VRF_1.  Each FFN weight M_RD_DRAM is
+                 * issued right after the MVM that consumed the previous
+                 * MRF so the matrix load overlaps the activation, and
+                 * Wo for position _pos+1 is issued at the end of
+                 * position _pos to overlap LN2. */
+
+                /* LN1 params: gamma → IVRF, beta → ADDSUB_VRF_0 */
+                SEND_SI(OP_V_RD, MEM_MVM_ACC_VRF, CACHE_LN1_GAMMA);
+                SEND_SI(OP_V_WR, 5, 0);
+                SEND_SI(OP_V_RD, MEM_MVM_ACC_VRF, CACHE_LN1_BETA);
+                SEND_SI(OP_V_WR, 7, 0);
+
+                /* Self-output + residual 1: Z → Wo → +b_o → +X.
+                 * Wo is already in MRF (preloaded for position 0 and
+                 * hoisted into the previous position's tail for the
+                 * rest), so MV_MUL reads the pipe (Z) directly. */
+                SEND_LO(OP_V_RD_DRAM, SCRATCH_Z + _pos * hidden_size);
+                if (_pos == 0) {
+                    SEND_LO(OP_M_RD_DRAM, _PROJ_BASE + 3 * _STRIDE);
+                }
+                SEND_SI(OP_MV_MUL, 0, 0);
+                SEND_SI(OP_V_RD, MEM_MVM_ACC_VRF, CACHE_BO);
+                SEND_SI(OP_VV_ADD, 0, 0);
+                SEND_LO(OP_V_RD_DRAM, x_base);
+                SEND_SI(OP_VV_ADD, 0, 0);
+
+                /* LN1 — reads the residual straight from the pipeline */
+                SEND_SI(OP_V_FUNC, SUB_LAYERNORM, 0);
+
+                /* FFN1: LN1 result consumed straight from the pipeline */
+                SEND_LO(OP_M_RD_DRAM, _PROJ_BASE + 4 * _STRIDE);
+                SEND_SI(OP_MV_MUL, 0, 0);
+                SEND_SI(OP_V_RD, MEM_MVM_ACC_VRF, CACHE_BI);
+                SEND_SI(OP_VV_ADD, 0, 0);
+
+                /* GELU reads the FFN1 output from the pipeline */
+                SEND_SI(OP_V_GELU, 0, 0);
+
+                /* LN2 params: stage GELU, load gamma → IVRF and
+                 * beta → ADDSUB_VRF_0, restore the GELU result. */
+                SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);   /* stage GELU input */
+                SEND_SI(OP_V_RD, MEM_MVM_ACC_VRF, CACHE_LN2_GAMMA);
+                SEND_SI(OP_V_WR, 5, 0);
+                SEND_SI(OP_V_RD, MEM_MVM_ACC_VRF, CACHE_LN2_BETA);
+                SEND_SI(OP_V_WR, 7, 0);
+                SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
+
+                /* FFN2: GELU result consumed straight from the pipeline */
+                SEND_LO(OP_M_RD_DRAM, _PROJ_BASE + 5 * _STRIDE);
+                SEND_SI(OP_MV_MUL, 0, 0);
+                SEND_SI(OP_V_RD, MEM_MVM_ACC_VRF, CACHE_BO2);
+                SEND_SI(OP_VV_ADD, 0, 0);
+
+                /* Residual 2: FFN2 + original X */
+                SEND_LO(OP_V_RD_DRAM, x_base);
+                SEND_SI(OP_VV_ADD, 0, 0);
+
+                /* LN2 — reads the residual straight from the pipeline */
+                SEND_SI(OP_V_FUNC, SUB_LAYERNORM, 0);
+
+                /* Save the LN2 output straight from the pipeline, then
+                 * hoist the next position's Wo load so it overlaps LN2. */
+                SEND_LO(OP_V_WR_DRAM, SAVE_OUT_BASE + _pos * num_tiles * 8);
+                if (_pos + 1 < seq_len) {
+                    SEND_LO(OP_M_RD_DRAM, _PROJ_BASE + 3 * _STRIDE);
+                }
+            } else {
             /* ── Self-output + first residual + LayerNorm ──────── */
-            mvm_tiled_q(_PROJ_BASE + 3 * _STRIDE, SCRATCH_Z, num_tiles,
-                        _PROJ_BASE + 3 * _STRIDE + _MAT_SIZE);
-            /* Residual 1: SO + X.  Save SO to scratch first,
-             * then load X and add. */
+            mvm_tiled_q(_PROJ_BASE + 3 * _STRIDE,
+                        SCRATCH_Z + _pos * hidden_size, num_tiles,
+                        _PROJ_BASE + 3 * _STRIDE + _MAT_SIZE, 1);
+            /* Residual 1: SO + X.  VV_ADD reads the pipeline (X) and
+             * vpipe_a (SO), so X is streamed straight from DRAM and no
+             * SO scratch round-trip is needed.  The original X input is
+             * never overwritten, so the residual-2 skip connection reads
+             * it from x_base later instead of staging a copy. */
             for (tr = 0; tr < num_tiles; tr++) {
                 uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
                 SEND_SI(OP_V_RD, vrf, 0);
-                SEND_LO(OP_V_WR_DRAM, SO_SCRATCH + tr * NATIVE_DIM);
-            }
-            /* Save original X for residual 2 skip connection */
-            for (tr = 0; tr < num_tiles; tr++) {
                 SEND_LO(OP_V_RD_DRAM, x_base + tr * NATIVE_DIM);
-                SEND_SI(OP_V_WR, (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1, 0);
-            }
-            save_row_tiles(num_tiles, SAVE_RES_BASE + _pos * num_tiles * 8,
-                            MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
-            /* Residual 1: reload SO from SO_SCRATCH, add X from VRF */
-            for (tr = 0; tr < num_tiles; tr++) {
-                uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
-                SEND_LO(OP_V_RD_DRAM, SO_SCRATCH + tr * NATIVE_DIM);
-                SEND_SI(OP_V_RD, vrf, 0);
                 SEND_SI(OP_VV_ADD, 0, 0);
                 SEND_SI(OP_V_WR, vrf, 0);
             }
             apply_layernorm(num_tiles, _LN1_GAMMA, _LN1_BETA, _SCRATCH);
-            /* Save LN1 output to DRAM scratch for FFN Wi input (contiguous) */
-            for (tr = 0; tr < num_tiles; tr++) {
-                uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
-                SEND_SI(OP_V_RD, vrf, 0);
-                SEND_LO(OP_V_WR_DRAM, SCRATCH_LN1 + tr * NATIVE_DIM);
+            if (num_tiles == 1) {
+                /* Single-tile: FFN1 reads the LN1 result straight from
+                 * ADDSUB_VRF_0 — no SCRATCH_LN1 store/reload. */
+                mvm_vrf_q(_PROJ_BASE + 4 * _STRIDE,
+                          _PROJ_BASE + 4 * _STRIDE + _MAT_SIZE);
+            } else {
+                /* Save LN1 output to DRAM scratch for FFN Wi input (contiguous) */
+                for (tr = 0; tr < num_tiles; tr++) {
+                    uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
+                    SEND_SI(OP_V_RD, vrf, 0);
+                    SEND_LO(OP_V_WR_DRAM, SCRATCH_LN1 + tr * NATIVE_DIM);
+                }
+                mvm_tiled_q(_PROJ_BASE + 4 * _STRIDE, SCRATCH_LN1, num_tiles,
+                            _PROJ_BASE + 4 * _STRIDE + _MAT_SIZE, 1);
             }
-
-            /* ── FFN: intermediate + GELU ──────────────────────── */
-            mvm_tiled_q(_PROJ_BASE + 4 * _STRIDE, SCRATCH_LN1, num_tiles,
-                        _PROJ_BASE + 4 * _STRIDE + _MAT_SIZE);
             SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
             SEND_SI(OP_V_GELU, 0, 0);
             SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_0, 0);
-            SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
-            SEND_SI(OP_V_GELU, 0, 0);
-            SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
-            /* Save GELU output to DRAM scratch for FFN Wo input (contiguous) */
+            if (num_tiles > 1) {
+                SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
+                SEND_SI(OP_V_GELU, 0, 0);
+                SEND_SI(OP_V_WR, MEM_ADDSUB_VRF_1, 0);
+            }
+            if (num_tiles == 1) {
+                /* Single-tile: FFN2 reads the GELU output straight from
+                 * ADDSUB_VRF_0 — no SCRATCH_GELU store/reload. */
+                mvm_vrf_q(_PROJ_BASE + 5 * _STRIDE,
+                          _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE);
+            } else {
+                /* Save GELU output to DRAM scratch for FFN Wo input (contiguous) */
+                for (tr = 0; tr < num_tiles; tr++) {
+                    uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
+                    SEND_SI(OP_V_RD, vrf, 0);
+                    SEND_LO(OP_V_WR_DRAM, SCRATCH_GELU + tr * NATIVE_DIM);
+                }
+                mvm_tiled_q(_PROJ_BASE + 5 * _STRIDE, SCRATCH_GELU, num_tiles,
+                            _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE, 1);
+            }
+            /* Residual 2: FFN2 + original X (skip connection read
+             * directly from the untouched input buffer). */
             for (tr = 0; tr < num_tiles; tr++) {
                 uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
                 SEND_SI(OP_V_RD, vrf, 0);
-                SEND_LO(OP_V_WR_DRAM, SCRATCH_GELU + tr * NATIVE_DIM);
+                SEND_LO(OP_V_RD_DRAM, x_base + tr * NATIVE_DIM);
+                SEND_SI(OP_VV_ADD, 0, 0);
+                SEND_SI(OP_V_WR, vrf, 0);
             }
-
-            /* ── FFN output + second residual + LayerNorm ──────── */
-            mvm_tiled_q(_PROJ_BASE + 5 * _STRIDE, SCRATCH_GELU, num_tiles,
-                        _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE);
-            load_and_add_row_tiles(num_tiles, SAVE_RES_BASE + _pos * num_tiles * 8,
-                                    MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
             apply_layernorm(num_tiles, _LN2_GAMMA, _LN2_BETA, _SCRATCH);
             save_row_tiles(num_tiles, SAVE_OUT_BASE + _pos * num_tiles * 8,
                             MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
+            }
         }
 
     npu_wait_done();

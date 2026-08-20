@@ -188,52 +188,6 @@ current best. The loop stops at `target_score`, after
 `max_no_improvement` unsuccessful rounds, or at `max_iterations`.
 The repository's original firmware is restored when the run exits.
 
-## Weighted memory/register cost
-
-The `weighted-latency-optimization` goal minimizes a dimensionless estimate:
-
-```text
-estimated_time =
-    memory_access_count × memory_weight
-  + register_access_count × register_weight
-```
-
-It is a reproducible comparison metric, not cycle-accurate hardware time.
-Its default configuration is:
-
-```yaml
-probe:
-  scoring_sequence_length: 6
-  metrics:
-    - memory_access_count
-    - register_access_count
-    - estimated_time
-  cost_model:
-    memory_weight: 10
-    register_weight: 1
-    register_resources: [VRF, MRF, SRF, REG]
-```
-
-Memory reads and writes are the executed NPU vector/matrix DRAM operations;
-each instruction counts once regardless of transfer width. Register reads are
-selected-resource entries in EventTracer `uses`, and writes are entries in
-`defs`. Pipeline temporaries, RISC-V GPRs, and CPU memory operations are
-excluded. The JSON and Markdown reports retain weights and the complete
-read/write breakdown.
-
-Weights must be non-negative. `scoring_sequence_length` must be one of
-`target.sequence_lengths`; goals without this field continue to score the last
-configured sequence. Requesting `estimated_time` requires a `cost_model`.
-
-```bash
-python3 jimu-dse/scripts/closed_loop.py validate-config \
-  --goal weighted-latency-optimization
-python3 jimu-dse/scripts/closed_loop.py render-prompt \
-  --goal weighted-latency-optimization
-bash jimu-dse/scripts/npu_closed_loop.sh \
-  --goal weighted-latency-optimization --agent opencode
-```
-
 ## SCALE-Sim cycle model
 
 The cycle goal can also enable the native lock-step timing device and a

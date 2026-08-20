@@ -31,7 +31,7 @@ firmware:
 	@mkdir -p $(dir $@)
 	cp $< $@
 
-opencode: .opencode/skills/dag-analyze/SKILL.md .opencode/skills/vrf-cache/SKILL.md .opencode/skills/dim-optimize/SKILL.md .opencode/skills/weighted-latency/SKILL.md .opencode/skills/cycle-latency/SKILL.md .opencode/skills/rtl-dataflow/SKILL.md .opencode/skills/dataflow-optimize/SKILL.md .opencode/skills/self-verify/SKILL.md
+opencode: .opencode/skills/dag-analyze/SKILL.md .opencode/skills/vrf-cache/SKILL.md .opencode/skills/dim-optimize/SKILL.md .opencode/skills/cycle-latency/SKILL.md .opencode/skills/rtl-dataflow/SKILL.md .opencode/skills/dataflow-optimize/SKILL.md .opencode/skills/self-verify/SKILL.md
 	@echo "✅ OpenCode agent configured (skills installed, permissions from global config)"
 
 timing-deps:
@@ -53,7 +53,6 @@ validate-goals:
 	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal dram-optimization
 	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal compute-optimization
 	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal combined
-	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal weighted-latency-optimization
 	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal cycle-latency-optimization
 	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal rtl-cycle-optimization
 

@@ -27,7 +27,7 @@ def config():
 def test_all_builtin_goals_validate():
     for goal in (
         "dram-optimization", "compute-optimization", "combined",
-        "weighted-latency-optimization", "cycle-latency-optimization",
+        "cycle-latency-optimization",
         "rtl-cycle-optimization",
     ):
         loaded = closed_loop.load_config(goal)
@@ -683,47 +683,6 @@ def test_composite_cost_can_trade_memory_for_register_accesses():
     )
     assert score > 0
     assert details["estimated_time"]["normalized"] == pytest.approx(5 / 280)
-
-
-@pytest.mark.parametrize(
-    "mutation, message",
-    [
-        (
-            lambda c: c["probe"]["cost_model"].update({"memory_weight": -1}),
-            "memory_weight must be non-negative",
-        ),
-        (
-            lambda c: c["probe"]["cost_model"].update(
-                {"register_resources": ["VRF", "CPU_GPR"]}
-            ),
-            "unsupported register resource",
-        ),
-        (
-            lambda c: c["probe"].update({"scoring_sequence_length": 99}),
-            "must appear in target.sequence_lengths",
-        ),
-    ],
-)
-def test_invalid_cost_model_is_rejected(mutation, message):
-    candidate = closed_loop.load_config("weighted-latency-optimization")
-    mutation(candidate)
-    with pytest.raises(closed_loop.ConfigError, match=message):
-        closed_loop.validate_config(candidate)
-
-
-def test_estimated_time_requires_cost_model():
-    candidate = closed_loop.load_config("weighted-latency-optimization")
-    candidate["probe"].pop("cost_model")
-    with pytest.raises(closed_loop.ConfigError, match="cost_model is required"):
-        closed_loop.validate_config(candidate)
-
-
-def test_zero_cost_weights_are_allowed():
-    candidate = closed_loop.load_config("weighted-latency-optimization")
-    candidate["probe"]["cost_model"].update({
-        "memory_weight": 0, "register_weight": 0
-    })
-    closed_loop.validate_config(candidate)
 
 
 def test_loop_promotes_valid_improvement_and_restores_worktree(

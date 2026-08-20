@@ -30,7 +30,7 @@ report. Resume is allowed only when the configuration fingerprint matches.
 The complete schema and operational examples are maintained in
 `jimu-dse/docs/how-to-run.md`.
 
-The optional weighted-latency cost model derives NPU DRAM operation counts
+The optional weighted access-cost model derives NPU DRAM operation counts
 from emulator DRAM statistics and on-chip register accesses from EventTracer
 def-use resources. Its units remain deliberately abstract and separate from
 the cycle-like timing models.

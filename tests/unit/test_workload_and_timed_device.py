@@ -176,6 +176,25 @@ def test_timed_device_models_increment_memory_span_and_transfer_count():
     assert inc["duration_cycles"] >= 6
 
 
+def test_timed_device_distinguishes_dram_from_on_chip_transfer_cost():
+    inner = FakeFunctionalDevice()
+    profile = TimedDeviceProfile.load(
+        "jimu-dse/timing/npu-timed-v1.yaml"
+    )
+    timed = TimedNpuDevice(inner, profile)
+
+    local = _raw(2, (5 << 16) | 0)
+    dram = _raw(OP_V_RD_DRAM, 0x20)
+    timed.store(NPU_INST_FIFO, local.to_bytes(4, "little"))
+    timed.store(NPU_INST_FIFO, dram.to_bytes(4, "little"))
+
+    local_cycles = timed.timeline[0]["duration_cycles"]
+    dram_cycles = timed.timeline[1]["duration_cycles"]
+    assert local_cycles == 2
+    assert dram_cycles == 14
+    assert dram_cycles >= 7 * local_cycles
+
+
 def test_timed_device_matrix_transfer_uses_programmed_tile_rows():
     inner = FakeFunctionalDevice()
     timed = TimedNpuDevice(inner, TimedDeviceProfile.from_dict({

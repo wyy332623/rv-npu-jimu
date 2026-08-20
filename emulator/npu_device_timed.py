@@ -57,10 +57,20 @@ class TimedDeviceProfile:
     npu_ticks_per_cpu_cycle: int = 1
     default_latency: int = 1
     instruction_latencies: dict[str, int] = field(default_factory=dict)
+    instruction_initiation_intervals: dict[str, int] = field(default_factory=dict)
     units: dict[str, UnitTiming] = field(default_factory=dict)
     memory_bytes_per_cycle: float = 8.0
     memory_setup_cycles: int = 2
+    memory_read_setup_cycles: int = 2
+    memory_write_setup_cycles: int = 2
+    memory_minimum_transfer_bytes: int = 0
     memory_element_bytes: int = 2
+    on_chip_bytes_per_cycle: float = 8.0
+    on_chip_read_setup_cycles: int = 1
+    on_chip_write_setup_cycles: int = 1
+    on_chip_element_bytes: int = 2
+    mvu_lanes: int = 4
+    mvu_hdl_controller_timing: bool = False
 
     def __post_init__(self):
         defaults = {
@@ -77,6 +87,10 @@ class TimedDeviceProfile:
     def from_dict(cls, data: dict[str, Any]) -> "TimedDeviceProfile":
         timing = data.get("timed_device", data)
         memory = timing.get("memory", data.get("memory", {}))
+        on_chip = timing.get(
+            "on_chip_memory", data.get("on_chip_memory", {})
+        )
+        mvu = timing.get("mvu", {})
         default_latency = int(timing.get("default_latency", 1))
         result = cls(
             name=str(timing.get("name", data.get("name", "generic-npu-timed-v1"))),
@@ -93,16 +107,48 @@ class TimedDeviceProfile:
                     "instruction_latencies", data.get("instruction_latencies", {})
                 ).items()
             },
+            instruction_initiation_intervals={
+                str(name): max(1, int(value))
+                for name, value in timing.get(
+                    "instruction_initiation_intervals",
+                    data.get("instruction_initiation_intervals", {}),
+                ).items()
+            },
             units={
                 str(name): UnitTiming.from_dict(value, default_latency)
                 for name, value in timing.get("units", {}).items()
             },
             memory_bytes_per_cycle=float(memory.get("bytes_per_cycle", 8)),
             memory_setup_cycles=max(0, int(memory.get("setup_cycles", 2))),
+            memory_read_setup_cycles=max(0, int(memory.get(
+                "read_setup_cycles", memory.get("setup_cycles", 2)
+            ))),
+            memory_write_setup_cycles=max(0, int(memory.get(
+                "write_setup_cycles", memory.get("setup_cycles", 2)
+            ))),
+            memory_minimum_transfer_bytes=max(
+                0, int(memory.get("minimum_transfer_bytes", 0))
+            ),
             memory_element_bytes=max(1, int(memory.get("element_bytes", 2))),
+            on_chip_bytes_per_cycle=float(on_chip.get("bytes_per_cycle", 8)),
+            on_chip_read_setup_cycles=max(
+                0, int(on_chip.get("read_setup_cycles", 1))
+            ),
+            on_chip_write_setup_cycles=max(
+                0, int(on_chip.get("write_setup_cycles", 1))
+            ),
+            on_chip_element_bytes=max(
+                1, int(on_chip.get("element_bytes", 2))
+            ),
+            mvu_lanes=max(1, int(mvu.get("lanes", 4))),
+            mvu_hdl_controller_timing=(
+                mvu.get("controller_timing") == "hdl-derived"
+            ),
         )
         if result.memory_bytes_per_cycle <= 0:
             raise ValueError("memory.bytes_per_cycle must be positive")
+        if result.on_chip_bytes_per_cycle <= 0:
+            raise ValueError("on_chip_memory.bytes_per_cycle must be positive")
         return result
 
     @classmethod
@@ -452,7 +498,7 @@ class TimedNpuDevice:
         duration = self._duration(command, unit)
         finish = start + duration
         self._issue_available[issue_slot] = start + 1
-        slots[unit_slot] = start + unit.initiation_interval
+        slots[unit_slot] = start + self._initiation_interval(command, unit)
         fifo_releases.append(start)
         if command.memory:
             self._memory_available = finish
@@ -474,20 +520,90 @@ class TimedNpuDevice:
         )
 
     def _duration(self, command: NpuCommand, unit: UnitTiming) -> int:
-        duration = int(self.profile.instruction_latencies.get(
-            command.op, unit.latency if unit.latency is not None
-            else self.profile.default_latency,
-        ))
+        configured = self._instruction_timing_value(
+            self.profile.instruction_latencies, command
+        )
+        duration = int(
+            configured if configured is not None else (
+                unit.latency if unit.latency is not None
+                else self.profile.default_latency
+            )
+        )
+        if configured is None and command.op == "M_RD" and command.opd0 == 18:
+            duration = 1 + self._inner.native_dim * self._inner.native_dim
+        elif (
+            configured is None
+            and command.op.startswith("MV_MUL")
+            and self.profile.mvu_hdl_controller_timing
+        ):
+            duration = self._hdl_mvu_contract()[0]
         if command.memory:
             payload = (
                 command.memory.total_elements * self.profile.memory_element_bytes
             )
-            duration = max(duration, self.profile.memory_setup_cycles + math.ceil(
-                payload / self.profile.memory_bytes_per_cycle
-            ))
+            payload = max(payload, self.profile.memory_minimum_transfer_bytes)
+            setup = (
+                self.profile.memory_read_setup_cycles
+                if command.memory.direction == "read"
+                else self.profile.memory_write_setup_cycles
+            )
+            duration = max(
+                duration,
+                setup + math.ceil(payload / self.profile.memory_bytes_per_cycle),
+            )
+        elif configured is None and command.op in ("V_RD", "V_WR"):
+            payload = self._inner.native_dim * self.profile.on_chip_element_bytes
+            setup = (
+                self.profile.on_chip_read_setup_cycles
+                if command.op == "V_RD"
+                else self.profile.on_chip_write_setup_cycles
+            )
+            duration = max(
+                duration,
+                setup + math.ceil(
+                    payload / self.profile.on_chip_bytes_per_cycle
+                ),
+            )
         if command.inc_parent_opcode is not None and command.memory is None:
             duration *= self._increment_count()
         return max(0, duration)
+
+    @staticmethod
+    def _instruction_timing_value(mapping: dict[str, int],
+                                  command: NpuCommand) -> int | None:
+        variant = f"{command.op}@{command.opd0}"
+        if variant in mapping:
+            return mapping[variant]
+        return mapping.get(command.op)
+
+    def _initiation_interval(self, command: NpuCommand,
+                             unit: UnitTiming) -> int:
+        configured = self._instruction_timing_value(
+            self.profile.instruction_initiation_intervals, command
+        )
+        if configured is not None:
+            return configured
+        if command.op == "M_RD" and command.opd0 == 18:
+            return 1 + self._inner.native_dim * self._inner.native_dim
+        if (
+            command.op.startswith("MV_MUL")
+            and self.profile.mvu_hdl_controller_timing
+        ):
+            return self._hdl_mvu_contract()[1]
+        return unit.initiation_interval
+
+    def _hdl_mvu_contract(self) -> tuple[int, int]:
+        native_dim = max(1, int(self._inner.native_dim))
+        active_lanes = max(1, min(self.profile.mvu_lanes, native_dim))
+        groups = math.ceil(native_dim / active_lanes)
+        dot_latency = math.ceil(math.log2(active_lanes)) + 1
+        total_fires = native_dim * groups
+        if groups == 1:
+            last_fire = total_fires
+        else:
+            last_fire = 1 + (total_fires - 1) * (dot_latency + 2)
+        latency = last_fire + dot_latency + 1
+        return latency, latency + 2
 
     def _increment_count(self) -> int:
         return max(1, self._shadow_regs.get(2, 1) * self._shadow_regs.get(3, 1))

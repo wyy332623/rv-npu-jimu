@@ -36,6 +36,34 @@ def by_idx(result):
     return {item["idx"]: item for item in result["events"]}
 
 
+def test_hdl_contracts_and_memory_tiers_feed_per_command_packets():
+    profile = RtlTimingProfile.load(PROFILE)
+    commands, _ = encode_trace([
+        event(0, "V_RD", uses=[("VRF", 5, 0)], defs=[("pipe",)]),
+        event(1, "V_RD_DRAM", defs=[("pipe",)],
+              memory=memory("read", 0, 4)),
+        event(2, "MV_MUL", target="mvu",
+              uses=[("MRF",), ("pipe",)], defs=[("pipe",)]),
+        {
+            **event(3, "M_RD", target="mmm", defs=[("MRF",)]),
+            "opd0": 18,
+        },
+        event(4, "VV_ADD", uses=[("pipe",), ("vpipe_a",)],
+              defs=[("pipe",)]),
+    ], {"native_dim": 4}, profile)
+
+    assert [(item.latency, item.initiation_interval) for item in commands] == [
+        (2, 1),   # one on-chip vector read
+        (14, 1),  # DRAM request setup plus minimum burst
+        (8, 10),  # HDL-derived MVU controller envelope
+        (17, 17),  # serialized VecToMat MRF drain
+        (3, 3),   # HDL-derived MFU command envelope
+    ]
+    assert commands[0].event["timing_model"]["memory_tier"] == "on_chip"
+    assert commands[1].event["timing_model"]["memory_tier"] == "dram"
+    assert commands[1].latency >= 7 * commands[0].latency
+
+
 def test_encoder_ssa_renames_pipeline_but_keeps_physical_storage():
     profile = RtlTimingProfile.load(PROFILE)
     commands, metadata = encode_trace([

@@ -295,3 +295,8 @@ The next fidelity steps are an RTL MMIO/FIFO wrapper connected to the ISS,
 AXI-like request/response timing, explicit ping-pong MRF addressing, calibrated
 MVU/vector pipelines, and optional DPI calls to the functional kernels.  These
 can be added without changing the schedule/cross-layer artifact contract.
+
+The active profiles now use first-pass HDL-derived controller contracts and a
+separate DRAM/on-chip transfer approximation. See
+`docs/hdl-derived-timing-parameters.md` for provenance, formulas, adopted
+latency/II values, and the calibration boundary.

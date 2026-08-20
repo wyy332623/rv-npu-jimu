@@ -1,13 +1,17 @@
 schema_version: 3
-name: jimu-rtl-dim2-v1
+name: jimu-rtl-dim2-hdl-derived-v2
 backend: verilator-rtl
 source:
   design: rtl/jimu_npu_timing_core.sv
   inspiration:
     - {project: Apache VTA, architecture: decoupled load-compute-store, license: Apache-2.0}
     - {project: Berkeley Gemmini, architecture: decoupled access-execute ROB and banked scratchpad, license: BSD-3-Clause}
+  timing_parameters:
+    artifact: hdl_functional_model.zip
+    sha256: 85762AD875EA855F5896C756E87148AB30569889C5F83B79BA2538D983D46BB3
+    status: hdl-derived-first-pass-uncalibrated
 rtl:
-  name: jimu-rtl-dim2-v1
+  name: jimu-rtl-dim2-hdl-derived-v2
   rob_depth: 16
   resource_bits: 128
   scratchpad_banks: 8
@@ -16,12 +20,21 @@ rtl:
   wsl_distro: Ubuntu-22.04
   memory:
     bytes_per_cycle: 8
-    setup_cycles: 2
+    setup_cycles: 12
+    read_setup_cycles: 12
+    write_setup_cycles: 12
+    minimum_transfer_bytes: 16
     element_bytes: 2
     alias_granule_elements: 4
+  on_chip_memory:
+    bytes_per_cycle: 4
+    read_setup_cycles: 1
+    write_setup_cycles: 1
+    element_bytes: 2
   mvu:
     lanes: 2
     pipeline_cycles: 3
+    controller_timing: hdl-derived
   vector:
     lanes: 2
     pipeline_cycles: 1
@@ -32,9 +45,32 @@ rtl:
     vector: {initiation_interval: 1}
     control: {initiation_interval: 1}
   instruction_latencies:
-    V_FUNC/SOFTMAX: 12
-    V_FUNC/LAYERNORM: 16
-    V_GELU: 4
-    V_EXP: 4
-    S_RECIP: 4
-    S_SQRT: 8
+    VV_ADD: 3
+    VV_A_SUB_B: 3
+    VV_B_SUB_A: 3
+    VV_MUL: 3
+    V_FUNC/SOFTMAX: 6
+    V_FUNC/LAYERNORM: 6
+    V_GELU: 3
+    V_EXP: 3
+    S_RECIP: 1
+    S_SQRT: 1
+    SS_MUL: 1
+    SS_ADD: 1
+    M_WR: 1
+    "V_RD@17": 1
+    "V_WR@14": 2
+    "V_WR@15": 2
+    "V_WR@16": 2
+  instruction_initiation_intervals:
+    VV_ADD: 3
+    VV_A_SUB_B: 3
+    VV_B_SUB_A: 3
+    VV_MUL: 3
+    V_FUNC/SOFTMAX: 1
+    V_FUNC/LAYERNORM: 1
+    V_GELU: 3
+    V_EXP: 3
+    "V_WR@14": 2
+    "V_WR@15": 2
+    "V_WR@16": 2

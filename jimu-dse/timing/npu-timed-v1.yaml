@@ -1,26 +1,60 @@
 schema_version: 1
-name: npu-timed-v1
+name: npu-timed-hdl-derived-v2
 timed_device:
-  name: npu-timed-v1
+  name: npu-timed-hdl-derived-v2
   decoder_latency: 1
   issue_width: 1
   front_end_fifo_depth: 64
   npu_ticks_per_cpu_cycle: 1
   default_latency: 1
   instruction_latencies:
-    V_FUNC/SOFTMAX: 12
-    V_FUNC/LAYERNORM: 16
-    V_GELU: 4
-    V_EXP: 4
-    S_RECIP: 4
-    S_SQRT: 8
+    VV_ADD: 3
+    VV_A_SUB_B: 3
+    VV_B_SUB_A: 3
+    VV_MUL: 3
+    V_FUNC/SOFTMAX: 6
+    V_FUNC/LAYERNORM: 6
+    V_GELU: 3
+    V_EXP: 3
+    S_RECIP: 1
+    S_SQRT: 1
+    SS_MUL: 1
+    SS_ADD: 1
+    M_WR: 1
+    "V_RD@17": 1
+    "V_WR@14": 2
+    "V_WR@15": 2
+    "V_WR@16": 2
+  instruction_initiation_intervals:
+    VV_ADD: 3
+    VV_A_SUB_B: 3
+    VV_B_SUB_A: 3
+    VV_MUL: 3
+    V_FUNC/SOFTMAX: 1
+    V_FUNC/LAYERNORM: 1
+    V_GELU: 3
+    V_EXP: 3
+    "V_WR@14": 2
+    "V_WR@15": 2
+    "V_WR@16": 2
   memory:
     bytes_per_cycle: 8
-    setup_cycles: 2
+    setup_cycles: 12
+    read_setup_cycles: 12
+    write_setup_cycles: 12
+    minimum_transfer_bytes: 16
     element_bytes: 2
+  on_chip_memory:
+    bytes_per_cycle: 8
+    read_setup_cycles: 1
+    write_setup_cycles: 1
+    element_bytes: 2
+  mvu:
+    lanes: 4
+    controller_timing: hdl-derived
   units:
     control: {latency: 1, initiation_interval: 1, count: 1, fifo_depth: 64}
-    vmm: {latency: 3, initiation_interval: 1, count: 1, fifo_depth: 16}
+    vmm: {latency: 2, initiation_interval: 1, count: 1, fifo_depth: 16}
     mmm: {latency: 5, initiation_interval: 5, count: 1, fifo_depth: 16}
     mvu: {latency: 4, initiation_interval: 1, count: 1, fifo_depth: 16}
-    spu: {latency: 2, initiation_interval: 1, count: 1, fifo_depth: 16}
+    spu: {latency: 1, initiation_interval: 1, count: 1, fifo_depth: 16}

@@ -50,13 +50,22 @@ class RtlTimingProfile:
     chain_fence: bool = True
     default_latency: int = 1
     instruction_latencies: dict[str, int] = field(default_factory=dict)
+    instruction_initiation_intervals: dict[str, int] = field(default_factory=dict)
     unit_initiation_intervals: dict[str, int] = field(default_factory=dict)
     memory_bytes_per_cycle: float = 8.0
     memory_setup_cycles: int = 2
+    memory_read_setup_cycles: int = 2
+    memory_write_setup_cycles: int = 2
+    memory_minimum_transfer_bytes: int = 0
     memory_element_bytes: int = 2
     dram_alias_granule_elements: int = 4
+    on_chip_bytes_per_cycle: float = 8.0
+    on_chip_read_setup_cycles: int = 1
+    on_chip_write_setup_cycles: int = 1
+    on_chip_element_bytes: int = 2
     mvu_lanes: int = 4
     mvu_pipeline_cycles: int = 3
+    mvu_hdl_controller_timing: bool = False
     vector_lanes: int = 4
     vector_pipeline_cycles: int = 1
     wsl_distro: str = "Ubuntu-22.04"
@@ -70,6 +79,10 @@ class RtlTimingProfile:
             raise ValueError("rtl.scratchpad_banks must be between 1 and 32")
         if self.memory_bytes_per_cycle <= 0:
             raise ValueError("memory.bytes_per_cycle must be positive")
+        if self.on_chip_bytes_per_cycle <= 0:
+            raise ValueError("on_chip_memory.bytes_per_cycle must be positive")
+        if self.memory_minimum_transfer_bytes < 0:
+            raise ValueError("memory.minimum_transfer_bytes cannot be negative")
         for name in UNIT_NAMES:
             self.unit_initiation_intervals.setdefault(name, 1)
 
@@ -77,6 +90,9 @@ class RtlTimingProfile:
     def from_dict(cls, data: dict[str, Any]) -> "RtlTimingProfile":
         rtl = data.get("rtl", data)
         memory = rtl.get("memory", data.get("memory", {}))
+        on_chip = rtl.get(
+            "on_chip_memory", data.get("on_chip_memory", {})
+        )
         mvu = rtl.get("mvu", {})
         vector = rtl.get("vector", {})
         unit_data = rtl.get("units", {})
@@ -101,15 +117,44 @@ class RtlTimingProfile:
                     data.get("instruction_latencies", {}),
                 ).items()
             },
+            instruction_initiation_intervals={
+                str(name): max(1, int(value))
+                for name, value in rtl.get(
+                    "instruction_initiation_intervals",
+                    data.get("instruction_initiation_intervals", {}),
+                ).items()
+            },
             unit_initiation_intervals=unit_iis,
             memory_bytes_per_cycle=float(memory.get("bytes_per_cycle", 8)),
             memory_setup_cycles=max(0, int(memory.get("setup_cycles", 2))),
+            memory_read_setup_cycles=max(0, int(memory.get(
+                "read_setup_cycles", memory.get("setup_cycles", 2)
+            ))),
+            memory_write_setup_cycles=max(0, int(memory.get(
+                "write_setup_cycles", memory.get("setup_cycles", 2)
+            ))),
+            memory_minimum_transfer_bytes=max(
+                0, int(memory.get("minimum_transfer_bytes", 0))
+            ),
             memory_element_bytes=max(1, int(memory.get("element_bytes", 2))),
             dram_alias_granule_elements=max(
                 1, int(memory.get("alias_granule_elements", 4))
             ),
+            on_chip_bytes_per_cycle=float(on_chip.get("bytes_per_cycle", 8)),
+            on_chip_read_setup_cycles=max(
+                0, int(on_chip.get("read_setup_cycles", 1))
+            ),
+            on_chip_write_setup_cycles=max(
+                0, int(on_chip.get("write_setup_cycles", 1))
+            ),
+            on_chip_element_bytes=max(
+                1, int(on_chip.get("element_bytes", 2))
+            ),
             mvu_lanes=max(1, int(mvu.get("lanes", 4))),
             mvu_pipeline_cycles=max(0, int(mvu.get("pipeline_cycles", 3))),
+            mvu_hdl_controller_timing=(
+                mvu.get("controller_timing") == "hdl-derived"
+            ),
             vector_lanes=max(1, int(vector.get("lanes", 4))),
             vector_pipeline_cycles=max(
                 0, int(vector.get("pipeline_cycles", 1))
@@ -313,31 +358,118 @@ def _unit_name(event: dict[str, Any]) -> str:
     return "vector"
 
 
-def _duration(event: dict[str, Any], metadata: dict[str, Any],
-              profile: RtlTimingProfile) -> int:
+def _instruction_timing_value(mapping: dict[str, int],
+                              event: dict[str, Any]) -> int | None:
+    """Look up an opcode contract, preferring an ``OP@opd0`` variant."""
     op = str(event.get("op", ""))
-    if op in profile.instruction_latencies:
-        return profile.instruction_latencies[op]
+    if event.get("opd0") is not None:
+        variant = f"{op}@{int(event['opd0'])}"
+        if variant in mapping:
+            return mapping[variant]
+    return mapping.get(op)
+
+
+def _transfer_cycles(*, elements: int, element_bytes: int,
+                     bytes_per_cycle: float, setup_cycles: int,
+                     minimum_transfer_bytes: int = 0) -> int:
+    payload = max(elements * element_bytes, minimum_transfer_bytes)
+    return max(1, setup_cycles + math.ceil(payload / bytes_per_cycle))
+
+
+def _hdl_mvu_contract(native_dim: int, lanes: int) -> tuple[int, int]:
+    """MVU command envelope inferred from the supplied HDL controller model."""
+    active_lanes = max(1, min(lanes, native_dim))
+    groups = math.ceil(native_dim / active_lanes)
+    dot_latency = math.ceil(math.log2(active_lanes)) + 1
+    total_fires = native_dim * groups
+    if groups == 1:
+        last_fire = total_fires
+    else:
+        last_fire = 1 + (total_fires - 1) * (dot_latency + 2)
+    latency = last_fire + dot_latency + 1
+    return latency, latency + 2
+
+
+def _duration_details(event: dict[str, Any], metadata: dict[str, Any],
+                      profile: RtlTimingProfile) -> tuple[int, str, str | None]:
+    op = str(event.get("op", ""))
+    configured = _instruction_timing_value(
+        profile.instruction_latencies, event
+    )
+    if configured is not None:
+        return configured, "instruction_contract", None
     memory = event.get("memory")
     if memory:
         elements = int(memory.get(
             "total_elements",
             int(memory.get("elements", 0)) * int(memory.get("count", 1)),
         ))
-        transferred = elements * profile.memory_element_bytes
-        return max(1, profile.memory_setup_cycles + math.ceil(
-            transferred / profile.memory_bytes_per_cycle
-        ))
+        direction = str(memory.get("direction", "read"))
+        setup = (
+            profile.memory_read_setup_cycles
+            if direction == "read" else profile.memory_write_setup_cycles
+        )
+        return _transfer_cycles(
+            elements=elements,
+            element_bytes=profile.memory_element_bytes,
+            bytes_per_cycle=profile.memory_bytes_per_cycle,
+            setup_cycles=setup,
+            minimum_transfer_bytes=profile.memory_minimum_transfer_bytes,
+        ), "external_dram_transfer", "dram"
     native_dim = max(1, int(metadata.get("native_dim", 1)))
+    if op == "M_RD" and int(event.get("opd0", -1)) == 18:
+        latency = 1 + native_dim * native_dim
+        return latency, "hdl_vec_to_mat_drain", "on_chip"
+    if op in ("V_RD", "V_WR"):
+        direction = "read" if op == "V_RD" else "write"
+        setup = (
+            profile.on_chip_read_setup_cycles
+            if direction == "read" else profile.on_chip_write_setup_cycles
+        )
+        return _transfer_cycles(
+            elements=native_dim,
+            element_bytes=profile.on_chip_element_bytes,
+            bytes_per_cycle=profile.on_chip_bytes_per_cycle,
+            setup_cycles=setup,
+        ), "on_chip_vector_transfer", "on_chip"
     if op.startswith("MV_MUL"):
+        if profile.mvu_hdl_controller_timing:
+            latency, _ = _hdl_mvu_contract(native_dim, profile.mvu_lanes)
+            return latency, "hdl_mvu_controller", None
         return max(1, profile.mvu_pipeline_cycles + math.ceil(
             native_dim / profile.mvu_lanes
-        ))
+        )), "mvu_formula", None
     if _unit_name(event) == "vector":
         return max(1, profile.vector_pipeline_cycles + math.ceil(
             native_dim / profile.vector_lanes
-        ))
-    return profile.default_latency
+        )), "vector_formula", None
+    return profile.default_latency, "default", None
+
+
+def _duration(event: dict[str, Any], metadata: dict[str, Any],
+              profile: RtlTimingProfile) -> int:
+    return _duration_details(event, metadata, profile)[0]
+
+
+def _initiation_interval(event: dict[str, Any], unit: str,
+                         metadata: dict[str, Any],
+                         profile: RtlTimingProfile) -> int:
+    configured = _instruction_timing_value(
+        profile.instruction_initiation_intervals, event
+    )
+    if configured is not None:
+        return configured
+    native_dim = max(1, int(metadata.get("native_dim", 1)))
+    if str(event.get("op", "")) == "M_RD" and int(
+        event.get("opd0", -1)
+    ) == 18:
+        return 1 + native_dim * native_dim
+    if (
+        str(event.get("op", "")).startswith("MV_MUL")
+        and profile.mvu_hdl_controller_timing
+    ):
+        return _hdl_mvu_contract(native_dim, profile.mvu_lanes)[1]
+    return profile.unit_initiation_intervals[unit]
 
 
 def encode_trace(events: Iterable[dict[str, Any]], metadata: dict[str, Any],
@@ -351,6 +483,9 @@ def encode_trace(events: Iterable[dict[str, Any]], metadata: dict[str, Any],
     commands = []
     for sim_id, (event, (reads, writes)) in enumerate(zip(event_list, accesses)):
         unit = _unit_name(event)
+        latency, latency_source, memory_tier = _duration_details(
+            event, metadata, profile
+        )
         read_mask = sum(1 << bit_allocation[item] for item in reads)
         write_mask = sum(1 << bit_allocation[item] for item in writes)
         bank_reads = 0
@@ -371,8 +506,10 @@ def encode_trace(events: Iterable[dict[str, Any]], metadata: dict[str, Any],
             sim_id=sim_id,
             event=event,
             unit_name=unit,
-            latency=_duration(event, metadata, profile),
-            initiation_interval=profile.unit_initiation_intervals[unit],
+            latency=latency,
+            initiation_interval=_initiation_interval(
+                event, unit, metadata, profile
+            ),
             read_identities=reads,
             write_identities=writes,
             read_mask=read_mask,
@@ -382,6 +519,12 @@ def encode_trace(events: Iterable[dict[str, Any]], metadata: dict[str, Any],
             uses_dram=bool(event.get("memory")),
             barrier=profile.chain_fence and event.get("op") == "INST_ISSUE",
         ))
+        commands[-1].event["timing_model"] = {
+            "latency_source": latency_source,
+            "memory_tier": memory_tier,
+            "latency_cycles": latency,
+            "initiation_interval": commands[-1].initiation_interval,
+        }
     allocation_metadata["ssa_pipeline_tokens"] = sum(
         1 for identity in bit_allocation if identity[0] == "virtual"
     )
@@ -398,7 +541,8 @@ class _ToolRunner:
         if os.name == "nt" and shutil.which("wsl.exe"):
             probe = subprocess.run(
                 ["wsl.exe", "-d", self.distro, "--", "which", "verilator"],
-                capture_output=True, text=True,
+                capture_output=True, text=True, encoding="utf-8",
+                errors="replace",
             )
             if probe.returncode == 0:
                 self.wsl = True
@@ -422,7 +566,10 @@ class _ToolRunner:
                      for item in arguments]
         if self.wsl:
             converted = ["wsl.exe", "-d", self.distro, "--", *converted]
-        result = subprocess.run(converted, capture_output=True, text=True)
+        result = subprocess.run(
+            converted, capture_output=True, text=True,
+            encoding="utf-8", errors="replace",
+        )
         if result.returncode:
             output = "\n".join(part for part in (result.stdout, result.stderr) if part)
             raise RtlSimulationError(output.strip())
@@ -661,6 +808,7 @@ def _build_schedule(commands: list[EncodedCommand], rows: dict[int, dict[str, in
                 ].items()
             },
             "memory": event.get("memory"),
+            "timing_model": event.get("timing_model", {}),
             "source": event.get("source", {}),
             "tensor_reads": event.get("tensor_reads", []),
             "tensor_writes": event.get("tensor_writes", []),

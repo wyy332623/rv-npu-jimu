@@ -81,6 +81,11 @@ python3 scripts/analyze_firmware.py \
   -o _out/bert-rtl --no-render
 ```
 
+The active RTL profiles distinguish external DRAM setup/burst costs from
+on-chip bank transfers and use first-pass HDL-derived command latency/II
+contracts. The assumptions and calibration status are documented in
+`docs/hdl-derived-timing-parameters.md`.
+
 The same backend is available to the agent loop as a scored goal:
 
 ```bash

@@ -1,0 +1,35 @@
+schema_version: 1
+name: bert-dim4-seq6
+firmware: ../../firmware/build_dim4/bert.elf
+hardware_profile: ../timing/npu-timed-v1.yaml
+cycle_limit: 300000
+drain_on_halt: true
+metadata: {native_dim: 4, hidden_size: 4, seq_len: 6, num_head: 2}
+tensors:
+  - {name: input_sequence, address: 0x000, length: 24, shape: [6, 4], role: input}
+  - {name: weight_q, address: 0x01c, length: 16, shape: [4, 4], role: parameter, frozen: true}
+  - {name: bias_q, address: 0x02c, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: weight_k, address: 0x030, length: 16, shape: [4, 4], role: parameter, frozen: true}
+  - {name: bias_k, address: 0x040, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: weight_v, address: 0x044, length: 16, shape: [4, 4], role: parameter, frozen: true}
+  - {name: bias_v, address: 0x054, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: weight_self_output, address: 0x058, length: 16, shape: [4, 4], role: parameter, frozen: true}
+  - {name: bias_self_output, address: 0x068, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: weight_ffn1, address: 0x06c, length: 16, shape: [4, 4], role: parameter, frozen: true}
+  - {name: bias_ffn1, address: 0x07c, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: weight_ffn2, address: 0x080, length: 16, shape: [4, 4], role: parameter, frozen: true}
+  - {name: bias_ffn2, address: 0x090, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: ln1_gamma, address: 0x094, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: ln1_beta, address: 0x09c, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: ln2_gamma, address: 0x0a4, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: ln2_beta, address: 0x0ac, length: 4, shape: [4], role: parameter, frozen: true}
+  - {name: scratch_ln, address: 0x500, length: 4, shape: [4], role: intermediate}
+  - {name: scratch_z, address: 0x600, length: 4, shape: [4], role: intermediate}
+  - {name: scratch_ln1, address: 0x620, length: 4, shape: [4], role: intermediate}
+  - {name: scratch_gelu, address: 0x640, length: 4, shape: [4], role: intermediate}
+  - {name: output_pos0, address: 0x800, length: 4, shape: [4], role: output, observable: true, tolerance: 0.001}
+  - {name: output_pos1, address: 0x808, length: 4, shape: [4], role: output, observable: true, tolerance: 0.001}
+  - {name: output_pos2, address: 0x810, length: 4, shape: [4], role: output, observable: true, tolerance: 0.001}
+  - {name: output_pos3, address: 0x818, length: 4, shape: [4], role: output, observable: true, tolerance: 0.001}
+  - {name: output_pos4, address: 0x820, length: 4, shape: [4], role: output, observable: true, tolerance: 0.001}
+  - {name: output_pos5, address: 0x828, length: 4, shape: [4], role: output, observable: true, tolerance: 0.001}

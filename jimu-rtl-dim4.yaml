@@ -1,0 +1,40 @@
+schema_version: 3
+name: jimu-rtl-dim4-v1
+backend: verilator-rtl
+source:
+  design: rtl/jimu_npu_timing_core.sv
+  inspiration:
+    - {project: Apache VTA, architecture: decoupled load-compute-store, license: Apache-2.0}
+    - {project: Berkeley Gemmini, architecture: decoupled access-execute ROB and banked scratchpad, license: BSD-3-Clause}
+rtl:
+  name: jimu-rtl-dim4-v1
+  rob_depth: 16
+  resource_bits: 128
+  scratchpad_banks: 8
+  chain_fence: true
+  default_latency: 1
+  wsl_distro: Ubuntu-22.04
+  memory:
+    bytes_per_cycle: 8
+    setup_cycles: 2
+    element_bytes: 2
+    alias_granule_elements: 4
+  mvu:
+    lanes: 4
+    pipeline_cycles: 3
+  vector:
+    lanes: 4
+    pipeline_cycles: 1
+  units:
+    load: {initiation_interval: 1}
+    store: {initiation_interval: 1}
+    mvu: {initiation_interval: 1}
+    vector: {initiation_interval: 1}
+    control: {initiation_interval: 1}
+  instruction_latencies:
+    V_FUNC/SOFTMAX: 12
+    V_FUNC/LAYERNORM: 16
+    V_GELU: 4
+    V_EXP: 4
+    S_RECIP: 4
+    S_SQRT: 8

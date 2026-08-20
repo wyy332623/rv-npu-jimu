@@ -1,5 +1,5 @@
 """
-Shared NpuFP32 class for AdderBoard tests.
+Shared NpuFP32 class for FP32 NPU tests.
 
 Subclasses NpuDeviceMini to disable all FP16 truncation,
 enabling clean float32 testing of NPU instruction sequences.

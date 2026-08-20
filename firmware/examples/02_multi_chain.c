@@ -10,10 +10,10 @@
  *                     vpipe_a), VV_ADD (vpipe_a + pipeline), store
  *
  * Also includes silu_mvm_residual_chain(): one position's FFN from
- * adder_140p.c phase2 as a single chain, showing SiLU via V_SIGM +
+ * a two-phase FFN as a single chain, showing SiLU via V_SIGM +
  * VV_MUL, then MVM, then residual VV_ADD — all through the pipeline.
  *
- * Reference: adder_140p.c adder_phase1() — the tiled attention
+ * Reference: the tiled attention phase — the tiled attention
  *            loop builds K.T MRF tiles across many positions
  *            within one chain before issuing.
  *
@@ -97,9 +97,9 @@ void multi_chain_example(void)
     npu_wait_chain();
 }
 
-/* ── Variant: SiLU × up → W_down → residual (from adder_140p.c) ─
+/* ── Variant: SiLU × up → W_down → residual ─
  *
- * One position of adder_phase2()'s FFN as a single chain group.
+ * One position of the FFN as a single chain group.
  * Demonstrates: scalar activation (V_SIGM) feeding VV_MUL, then
  * MVM, then residual VV_ADD — all through the implicit pipeline.
  *

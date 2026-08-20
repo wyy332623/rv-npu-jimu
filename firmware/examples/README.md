@@ -88,7 +88,7 @@ Then a second chain reads the VRF result and writes it to DRAM.
 **Chain 2** — Bias add: `W×X + bias → DRAM`
 
 Also contains `silu_mvm_residual_chain()`, a reference implementation
-of one position's FFN computation from `adder_140p.c`'s `adder_phase2()`,
+of one position's two-phase FFN computation,
 as a single chain group (15 instructions).
 
 ### `03_softmax_chain.c`

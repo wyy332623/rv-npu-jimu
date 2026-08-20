@@ -21,7 +21,7 @@
  *   V_WR        pipeline → VRF          (keeps pipeline — broadcast)
  *   INST_ISSUE  commit chain            → pipeline discarded, CHAIN_STATUS=0
  *
- * Reference: adder_140p.c's mvm() inline.
+ * Reference: the firmware's tiled MVM sequence.
  */
 
 #include <stdint.h>

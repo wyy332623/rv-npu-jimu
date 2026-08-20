@@ -42,32 +42,18 @@ ifeq ($(TARGET),bert)
     SRCS = startup.S lib/npu_driver.c bert/bert_layer.c
   endif
   ELF = $(BUILD_DIR)/bert.elf
-else ifeq ($(TARGET),adder)
-  SRCS = startup.S lib/npu_driver.c ../adderboard/firmware/adder_130p.c
-  ELF = $(BUILD_DIR)/adder.elf
-else ifeq ($(TARGET),adder_140p)
-  SRCS = startup.S lib/npu_driver.c ../adderboard/firmware/adder_140p.c
-  ELF = $(BUILD_DIR)/adder_140p.elf
 else
-  $(error Unknown TARGET=$(TARGET), expected 'bert', 'adder', or 'adder_140p')
+  $(error Unknown TARGET=$(TARGET), expected 'bert')
 endif
 
-# Map SRCS to build-dir objects: local sources keep their paths,
-# external sources (../adderboard/...) map to $(BUILD_DIR)/adder/
-_adder_srcs = $(filter ../adderboard/%,$(SRCS))
-_adder_objs = $(_adder_srcs:../adderboard/firmware/%.c=$(BUILD_DIR)/adder/%.o)
-_local_srcs = $(filter-out ../adderboard/%,$(SRCS))
-_local_objs = $(_local_srcs:%.S=$(BUILD_DIR)/%.o)
+# Map local sources to build-dir objects.
+_local_objs = $(SRCS:%.S=$(BUILD_DIR)/%.o)
 _local_objs := $(_local_objs:%.c=$(BUILD_DIR)/%.o)
-OBJS = $(_local_objs) $(_adder_objs)
+OBJS = $(_local_objs)
 
 .PHONY: all clean dirs
 
 all: $(ELF)
-
-# Object file mapping: sources from ../adderboard go to $(BUILD_DIR)/adder/
-$(BUILD_DIR)/adder/%.o: ../adderboard/firmware/%.c | dirs
-	$(CC) $(CFLAGS) -c $< -o $@
 
 $(BUILD_DIR)/%.o: %.S firmware.ld | dirs
 	$(CC) $(CFLAGS) -c $< -o $@
@@ -76,19 +62,9 @@ $(BUILD_DIR)/%.o: %.c | dirs
 	$(CC) $(CFLAGS) -c $< -o $@
 
 dirs:
-	@mkdir -p $(BUILD_DIR) $(BUILD_DIR)/lib $(BUILD_DIR)/bert $(BUILD_DIR)/adder
+	@mkdir -p $(BUILD_DIR) $(BUILD_DIR)/lib $(BUILD_DIR)/bert
 
 $(BUILD_DIR)/bert.elf: $(OBJS) firmware.ld
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@
-	@echo "=== Firmware built: $@ ==="
-	@file $@
-
-$(BUILD_DIR)/adder.elf: $(OBJS) firmware.ld
-	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@
-	@echo "=== Firmware built: $@ ==="
-	@file $@
-
-$(BUILD_DIR)/adder_140p.elf: $(OBJS) firmware.ld
 	$(CC) $(CFLAGS) $(LDFLAGS) $(OBJS) -o $@
 	@echo "=== Firmware built: $@ ==="
 	@file $@

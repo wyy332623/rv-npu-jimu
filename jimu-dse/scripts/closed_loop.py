@@ -26,10 +26,13 @@ except ImportError:  # pragma: no cover - exercised by CLI environments
 
 
 REPO_ROOT = Path(__file__).resolve().parents[2]
+if str(REPO_ROOT) not in sys.path:
+    sys.path.insert(0, str(REPO_ROOT))
 GOALS_DIR = REPO_ROOT / "jimu-dse" / "goals"
 RESULTS_DIR = REPO_ROOT / "jimu-dse" / "results"
 SUPPORTED_METRICS = {
     "total_bytes", "instr_count", "mv_mul_count", "mat_rd_ops", "test_pass",
+    "dram_elements", "functional_container_bytes", "rtl_payload_bytes",
     "memory_access_count", "memory_read_count", "memory_write_count",
     "register_access_count", "register_read_count", "register_write_count",
     "estimated_time",
@@ -37,9 +40,22 @@ SUPPORTED_METRICS = {
     "scalesim_stall_cycles", "trace_memory_cycles", "auxiliary_cycles",
     "predicted_npu_cycles",
     "parallel_predicted_npu_cycles", "overlap_saved_cycles",
+    "net_parallelism_savings_cycles", "gross_overlap_cycles",
+    "scheduler_idle_hole_cycles", "rtl_completion_makespan_cycles",
+    "rtl_idle_cycles", "rtl_retirement_tail_cycles",
     "memory_compute_overlap_cycles", "max_concurrent_ops",
     "dram_bus_utilization", "mvu_utilization", "vmm_utilization",
     "mmm_utilization", "spu_utilization", "schedule_chain_count",
+    "rtl_predicted_npu_cycles", "serial_command_cycles",
+    "memory_compute_overlap_ratio", "load_utilization", "store_utilization",
+    "vector_utilization", "control_utilization",
+    "rtl_counter_cycles", "rtl_counter_active_cycles",
+    "rtl_counter_memory_compute_overlap_cycles",
+    "rtl_counter_frontend_full_stall_cycles",
+    "rtl_counter_dependency_stall_cycles", "rtl_counter_unit_stall_cycles",
+    "rtl_counter_dram_stall_cycles", "rtl_counter_bank_stall_cycles",
+    "rtl_counter_barrier_stall_cycles", "rtl_counter_dispatches",
+    "rtl_counter_completions", "rtl_counter_max_inflight",
     "timed_wall_cycles", "timed_command_count", "timed_poll_reads",
     "timed_active_cycles", "timed_simulator_cycles",
     "timed_first_enqueue_cycle", "timed_last_retire_cycle",
@@ -61,6 +77,9 @@ AGENT_RUNTIME_SAFETY = [
     "firmware build or test commands instead.",
     "Never delete, move, rename, or modify `jimu-dse/results` or any "
     "`run-*` directory; those paths contain the active run state.",
+    "This is a non-interactive optimization iteration. Do not ask the user "
+    "what to do next: either implement one evidence-backed candidate in the "
+    "allowed target or return a concrete no-change reason.",
 ]
 TOP_LEVEL_KEYS = {
     "schema_version", "name", "description", "target", "agent", "prompt",
@@ -363,10 +382,23 @@ def validate_config(config: dict[str, Any]) -> None:
         "scalesim_layer_count", "scalesim_compute_cycles",
         "scalesim_stall_cycles", "trace_memory_cycles", "auxiliary_cycles",
         "predicted_npu_cycles", "parallel_predicted_npu_cycles",
-        "overlap_saved_cycles", "memory_compute_overlap_cycles",
+        "overlap_saved_cycles", "net_parallelism_savings_cycles",
+        "gross_overlap_cycles", "scheduler_idle_hole_cycles",
+        "rtl_completion_makespan_cycles", "rtl_idle_cycles",
+        "rtl_retirement_tail_cycles", "memory_compute_overlap_cycles",
         "max_concurrent_ops", "dram_bus_utilization", "mvu_utilization",
         "vmm_utilization", "mmm_utilization", "spu_utilization",
-        "schedule_chain_count",
+        "schedule_chain_count", "rtl_predicted_npu_cycles",
+        "serial_command_cycles", "memory_compute_overlap_ratio",
+        "load_utilization", "store_utilization", "vector_utilization",
+        "control_utilization", "rtl_counter_cycles",
+        "rtl_counter_active_cycles",
+        "rtl_counter_memory_compute_overlap_cycles",
+        "rtl_counter_frontend_full_stall_cycles",
+        "rtl_counter_dependency_stall_cycles", "rtl_counter_unit_stall_cycles",
+        "rtl_counter_dram_stall_cycles", "rtl_counter_bank_stall_cycles",
+        "rtl_counter_barrier_stall_cycles", "rtl_counter_dispatches",
+        "rtl_counter_completions", "rtl_counter_max_inflight",
     }
     if cycle_model is not None:
         if not isinstance(cycle_model, dict):
@@ -381,7 +413,7 @@ def validate_config(config: dict[str, Any]) -> None:
             {
                 "schema_version", "name", "backend", "source",
                 "scalesim_config", "include_scalesim_stalls", "memory",
-                "instruction_latencies", "scheduler",
+                "instruction_latencies", "scheduler", "rtl",
             },
             "cycle model profile",
         )
@@ -390,40 +422,54 @@ def validate_config(config: dict[str, Any]) -> None:
         expected_backend = {
             1: "scalesim",
             2: "scalesim-parallel",
+            3: "verilator-rtl",
         }.get(profile_schema)
         if expected_backend is None:
-            raise ConfigError("cycle model schema_version must be 1 or 2")
+            raise ConfigError("cycle model schema_version must be 1, 2, or 3")
         if backend != expected_backend:
             raise ConfigError(
                 f"cycle model schema_version {profile_schema} requires "
                 f"backend {expected_backend}"
             )
-        _repo_path(profile.get("scalesim_config", ""), "cycle model scalesim_config")
-        memory = profile.get("memory", {})
-        if not isinstance(memory, dict):
-            raise ConfigError("cycle model memory must be a mapping")
-        _unknown_keys(
-            memory,
-            {"bytes_per_cycle", "setup_cycles", "element_bytes"},
-            "cycle model memory",
-        )
-        for key in ("bytes_per_cycle", "setup_cycles", "element_bytes"):
-            value = memory.get(key)
-            if not isinstance(value, (int, float)) or value <= 0:
-                raise ConfigError(f"cycle model memory.{key} must be positive")
-        latencies = profile.get("instruction_latencies")
-        if not isinstance(latencies, dict) or not latencies:
-            raise ConfigError(
-                "cycle model instruction_latencies must be a non-empty mapping"
+        if profile_schema == 3:
+            try:
+                from emulator.npu_rtl_sim import RtlTimingProfile
+                RtlTimingProfile.from_dict(profile)
+            except (ImportError, ValueError) as exc:
+                raise ConfigError(f"invalid Verilator RTL cycle profile: {exc}") from exc
+        else:
+            _repo_path(
+                profile.get("scalesim_config", ""),
+                "cycle model scalesim_config",
             )
-        for name, value in latencies.items():
-            if not isinstance(name, str) or not isinstance(value, int) or value < 0:
+            memory = profile.get("memory", {})
+            if not isinstance(memory, dict):
+                raise ConfigError("cycle model memory must be a mapping")
+            _unknown_keys(
+                memory,
+                {"bytes_per_cycle", "setup_cycles", "element_bytes"},
+                "cycle model memory",
+            )
+            for key in ("bytes_per_cycle", "setup_cycles", "element_bytes"):
+                value = memory.get(key)
+                if not isinstance(value, (int, float)) or value <= 0:
+                    raise ConfigError(f"cycle model memory.{key} must be positive")
+            latencies = profile.get("instruction_latencies")
+            if not isinstance(latencies, dict) or not latencies:
                 raise ConfigError(
-                    "cycle model instruction latencies must be non-negative integers"
+                    "cycle model instruction_latencies must be a non-empty mapping"
                 )
-        scheduler = profile.get("scheduler")
-        if profile_schema == 1 and scheduler is not None:
-            raise ConfigError("legacy cycle model profile cannot define scheduler")
+            for name, value in latencies.items():
+                if (
+                    not isinstance(name, str) or not isinstance(value, int)
+                    or value < 0
+                ):
+                    raise ConfigError(
+                        "cycle model instruction latencies must be non-negative integers"
+                    )
+            scheduler = profile.get("scheduler")
+            if profile_schema == 1 and scheduler is not None:
+                raise ConfigError("legacy cycle model profile cannot define scheduler")
         if profile_schema == 2:
             if not isinstance(scheduler, dict):
                 raise ConfigError("parallel cycle model scheduler must be a mapping")
@@ -468,7 +514,7 @@ def validate_config(config: dict[str, Any]) -> None:
                     )
     if set(metrics) & cycle_metrics and cycle_model is None:
         raise ConfigError(
-            "probe.cycle_model is required when SCALE-Sim cycle metrics are requested"
+            "probe.cycle_model is required when cycle metrics are requested"
         )
 
     timed_metric_names = {name for name in SUPPORTED_METRICS if name.startswith("timed_")}
@@ -663,7 +709,7 @@ def _prompt_metric_view(
     baseline_metrics: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Keep scoring feedback actionable while leaving audit fields in artifacts."""
-    if "parallel_predicted_npu_cycles" not in metrics:
+    if not ({"parallel_predicted_npu_cycles", "rtl_predicted_npu_cycles"} & set(metrics)):
         return metrics
     scored_names = [item["metric"] for item in config["acceptance"]["score"]]
     score = {name: metrics[name] for name in scored_names if name in metrics}
@@ -691,10 +737,18 @@ def _prompt_metric_view(
                 "improvement_fraction": improvement,
             }
     optimization_names = (
-        "predicted_npu_cycles", "overlap_saved_cycles",
+        "predicted_npu_cycles", "rtl_predicted_npu_cycles",
+        "rtl_completion_makespan_cycles", "rtl_idle_cycles",
+        "rtl_retirement_tail_cycles", "serial_command_cycles",
+        "overlap_saved_cycles", "net_parallelism_savings_cycles",
+        "gross_overlap_cycles", "scheduler_idle_hole_cycles",
         "memory_compute_overlap_cycles", "max_concurrent_ops",
         "dram_bus_utilization", "mvu_utilization", "vmm_utilization",
-        "mmm_utilization", "spu_utilization",
+        "mmm_utilization", "spu_utilization", "load_utilization",
+        "store_utilization", "vector_utilization", "control_utilization",
+        "rtl_counter_dependency_stall_cycles",
+        "rtl_counter_dram_stall_cycles", "rtl_counter_bank_stall_cycles",
+        "rtl_counter_barrier_stall_cycles",
     )
     breakdown_names = (
         "scalesim_compute_cycles", "trace_memory_cycles", "auxiliary_cycles",
@@ -787,11 +841,31 @@ def calculate_cost_metrics(
     }
 
 
+def _project_environment() -> dict[str, str]:
+    """Build a stable PATH for project Python and user-installed agent CLIs."""
+    env = os.environ.copy()
+    candidates = (
+        REPO_ROOT / ".venv" / "bin",
+        REPO_ROOT / ".venv" / "Scripts",
+        Path.home() / ".npm-global" / "bin",
+        Path.home() / ".local" / "bin",
+    )
+    prefixes = [str(directory) for directory in candidates if directory.is_dir()]
+    if prefixes:
+        env["PATH"] = os.pathsep.join((*prefixes, env.get("PATH", "")))
+    return env
+
+
 def _run(
     command: list[str] | str, timeout: int | float | None,
     shell: bool = False, heartbeat: Callable[[float], None] | None = None,
     heartbeat_seconds: float = 20.0 * 60.0,
+    env: dict[str, str] | None = None,
+    raw_output_prefix: Path | None = None,
 ) -> dict[str, Any]:
+    if env is None:
+        env = _project_environment()
+
     def output_text(value: str | bytes | None) -> str:
         if value is None:
             return ""
@@ -805,12 +879,21 @@ def _run(
             return decoded
         return decoded[:4000] + "\n...[output truncated]...\n" + decoded[-15970:]
 
+    def captured_output(value: str | bytes | None, stream: str) -> str:
+        decoded = output_text(value)
+        if raw_output_prefix is not None:
+            suffix = ".stdout.jsonl" if stream == "stdout" else ".stderr.log"
+            output_path = Path(f"{raw_output_prefix}{suffix}")
+            output_path.parent.mkdir(parents=True, exist_ok=True)
+            output_path.write_text(decoded, encoding="utf-8")
+        return bounded_output(decoded)
+
     started = time.monotonic()
     try:
         if heartbeat is not None:
             proc = subprocess.Popen(
                 command, cwd=REPO_ROOT, text=True, stdout=subprocess.PIPE,
-                stderr=subprocess.PIPE, shell=shell,
+                stderr=subprocess.PIPE, shell=shell, env=env,
             )
             deadline = None if not timeout else started + float(timeout)
             try:
@@ -828,8 +911,8 @@ def _run(
                         )
                         return {
                             "exit_code": proc.returncode,
-                            "stdout": bounded_output(stdout),
-                            "stderr": bounded_output(stderr),
+                            "stdout": captured_output(stdout, "stdout"),
+                            "stderr": captured_output(stderr, "stderr"),
                             "timed_out": False,
                             "spawn_error": False,
                             "duration_seconds": round(
@@ -843,8 +926,8 @@ def _run(
                             stdout, stderr = proc.communicate()
                             return {
                                 "exit_code": None,
-                                "stdout": bounded_output(stdout),
-                                "stderr": bounded_output(stderr),
+                                "stdout": captured_output(stdout, "stdout"),
+                                "stderr": captured_output(stderr, "stderr"),
                                 "timed_out": True,
                                 "spawn_error": False,
                                 "duration_seconds": round(elapsed, 3),
@@ -856,12 +939,12 @@ def _run(
                 raise
         proc = subprocess.run(
             command, cwd=REPO_ROOT, text=True, capture_output=True,
-            timeout=timeout, shell=shell,
+            timeout=timeout, shell=shell, env=env,
         )
         return {
             "exit_code": proc.returncode,
-            "stdout": bounded_output(proc.stdout),
-            "stderr": bounded_output(proc.stderr),
+            "stdout": captured_output(proc.stdout, "stdout"),
+            "stderr": captured_output(proc.stderr, "stderr"),
             "timed_out": False,
             "spawn_error": False,
             "duration_seconds": round(time.monotonic() - started, 3),
@@ -869,8 +952,8 @@ def _run(
     except subprocess.TimeoutExpired as exc:
         return {
             "exit_code": None,
-            "stdout": bounded_output(exc.stdout),
-            "stderr": bounded_output(exc.stderr),
+            "stdout": captured_output(exc.stdout, "stdout"),
+            "stderr": captured_output(exc.stderr, "stderr"),
             "timed_out": True,
             "spawn_error": False,
             "duration_seconds": round(time.monotonic() - started, 3),
@@ -881,6 +964,36 @@ def _run(
             "timed_out": False, "spawn_error": True,
             "duration_seconds": round(time.monotonic() - started, 3),
         }
+
+
+def _resolve_worktree_git_dir(value: str, platform: str | None = None) -> str:
+    """Resolve a gitfile target across Windows-hosted WSL worktrees."""
+    platform = platform or os.name
+    match = re.match(r"^([A-Za-z]):[\\/](.*)$", value)
+    if match and platform != "nt":
+        remainder = match.group(2).replace("\\", "/")
+        return f"/mnt/{match.group(1).lower()}/{remainder}"
+    candidate = Path(value)
+    if not candidate.is_absolute():
+        candidate = REPO_ROOT / candidate
+    return str(candidate.resolve())
+
+
+def _agent_environment() -> dict[str, str]:
+    """Give subprocess agents a usable Git worktree in Windows/WSL setups."""
+    env = _project_environment()
+    gitfile = REPO_ROOT / ".git"
+    if not gitfile.is_file():
+        return env
+    match = re.match(
+        r"^gitdir:\s*(.+?)\s*$", gitfile.read_text(encoding="utf-8"), re.S
+    )
+    if not match:
+        return env
+    git_dir = _resolve_worktree_git_dir(match.group(1))
+    if Path(git_dir).is_dir():
+        env.update({"GIT_DIR": git_dir, "GIT_WORK_TREE": str(REPO_ROOT)})
+    return env
 
 
 def build_firmware(config: dict[str, Any], seq_len: int) -> dict[str, Any]:
@@ -973,16 +1086,6 @@ def _timing_schedule_context(schedule_path: Path) -> str:
     lines = [
         "## Parallel timing schedule",
         f"- timing_schedule_file={_display_path(schedule_path)}",
-        "- Resource mapping: vector DRAM=dram_bus+vmm; matrix "
-        "DRAM=dram_bus+mmm; MV_MUL=mvu; M_RD/M_WR=mmm; scalar and "
-        "configuration operations=spu; other vector/activation operations=vmm.",
-        "- Two events may overlap only when they have no RAW/WAR/WAW, "
-        "configuration-fence, overlapping DRAM-address, shared-resource, "
-        "queue-window, or chain-boundary conflict.",
-        "- All DRAM transfers serialize on dram_bus. A vector DRAM transfer may "
-        "overlap an independent MVU/MMM/SPU operation but not VMM work; a "
-        "matrix DRAM transfer may overlap independent MVU/VMM/SPU work but not "
-        "MMM work.",
     ]
     try:
         schedule = json.loads(schedule_path.read_text(encoding="utf-8"))
@@ -990,10 +1093,49 @@ def _timing_schedule_context(schedule_path: Path) -> str:
         lines.append(f"- schedule_summary_unavailable={type(exc).__name__}")
         return "\n".join(lines)
 
+    if schedule.get("backend") == "verilator-rtl":
+        lines.extend([
+            "- RTL resource mapping: DRAM commands use load/store plus the "
+            "shared dram_bus; MV_MUL=mvu; other math/vector operations=vector; "
+            "scalar/configuration operations=control.",
+            "- The 128-bit RTL scoreboard enforces explicit semantic RAW/WAR/WAW; "
+            "local SRAM bank ports, unit initiation intervals, finite ROB space, "
+            "and chain fences add structural constraints.",
+            "- DRAM and independent MVU/vector work execute concurrently. Use "
+            "dependency_resources and rtl_stall_cycles_by_reason before moving "
+            "a command.",
+            "- RTL stall counters measure pressure on the oldest blocked command. "
+            "A younger command can still dispatch in the same cycle, so these "
+            "counters are not additive makespan losses.",
+            "- rtl_completion_makespan_cycles is the last operation completion; "
+            "rtl_idle_cycles includes the remaining in-order retirement tail.",
+        ])
+    else:
+        lines.extend([
+            "- Resource mapping: vector DRAM=dram_bus+vmm; matrix "
+            "DRAM=dram_bus+mmm; MV_MUL=mvu; M_RD/M_WR=mmm; scalar and "
+            "configuration operations=spu; other vector/activation operations=vmm.",
+            "- Two events may overlap only when they have no RAW/WAR/WAW, "
+            "configuration-fence, overlapping DRAM-address, shared-resource, "
+            "queue-window, or chain-boundary conflict.",
+            "- All DRAM transfers serialize on dram_bus. A vector DRAM transfer may "
+            "overlap an independent MVU/MMM/SPU operation but not VMM work; a "
+            "matrix DRAM transfer may overlap independent MVU/VMM/SPU work but not "
+            "MMM work.",
+        ])
+
     metrics = schedule.get("metrics", {})
     lines.extend([
         f"- parallel_cycles={metrics.get('parallel_predicted_npu_cycles', 'n/a')}",
-        f"- overlap_saved_cycles={metrics.get('overlap_saved_cycles', 'n/a')}",
+        f"- rtl_cycles={metrics.get('rtl_predicted_npu_cycles', 'n/a')}",
+        "- rtl_idle_cycles="
+        f"{metrics.get('rtl_idle_cycles', 'n/a')}",
+        "- net_parallelism_savings_cycles="
+        f"{metrics.get('net_parallelism_savings_cycles', metrics.get('overlap_saved_cycles', 'n/a'))}",
+        "- gross_overlap_cycles="
+        f"{metrics.get('gross_overlap_cycles', 'n/a')}",
+        "- scheduler_idle_hole_cycles="
+        f"{metrics.get('scheduler_idle_hole_cycles', 'n/a')}",
         "- memory_compute_overlap_cycles="
         f"{metrics.get('memory_compute_overlap_cycles', 'n/a')}",
     ])
@@ -1013,7 +1155,7 @@ def _timing_schedule_context(schedule_path: Path) -> str:
         )
     events = diagnostics.get("critical_path_top_events", [])
     if events:
-        lines.extend(["", "### Longest critical-path events"])
+        lines.extend(["", "### Longest causal-chain events"])
         for event in events:
             lines.append(
                 "- idx={idx}, raw={raw}, expanded={expanded}, op={op}, "
@@ -1027,14 +1169,18 @@ def _timing_schedule_context(schedule_path: Path) -> str:
                     blocked=",".join(event.get("blocking_reasons", [])) or "ready",
                 )
             )
-    blockers = diagnostics.get("critical_path_top_blockers", [])
+    blockers = diagnostics.get(
+        "critical_path_top_blockers", diagnostics.get("top_blockers", [])
+    )
     if blockers:
-        lines.extend(["", "### Largest critical-path waits"])
+        lines.extend(["", "### Largest causal-chain waits"])
         for item in blockers:
             lines.append(
                 f"- idx={item.get('idx')}, op={item.get('op')}, "
                 f"wait={item.get('wait_cycles')} cycles, reasons="
-                + ",".join(item.get("blocking_reasons", []))
+                + ",".join(
+                    item.get("blocking_reasons", item.get("reasons", []))
+                )
             )
     note = diagnostics.get("source_mapping_note")
     if note:
@@ -1155,24 +1301,46 @@ cpu.run(cycles={config['probe'].get('cycle_limit', 300000)})
 if timed:
     timed.run_until_idle()
 ds=npu.get_dram_stats()
-total=(ds.get('vec_rd_elements',0)+ds.get('vec_wr_elements',0)+ds.get('mat_rd_elements',0)+ds.get('mat_wr_elements',0))*4
+dram_elements=(ds.get('vec_rd_elements',0)+ds.get('vec_wr_elements',0)+ds.get('mat_rd_elements',0)+ds.get('mat_wr_elements',0))
+functional_container_bytes=dram_elements*4
 mv=sum(1 for e in tracer.events if ((e['raw'] if isinstance(e,dict) else e.inst)>>24)&0xFF in (7,27))
-metrics={{'total_bytes':total,'instr_count':len(rec.inst_trace),'mv_mul_count':mv,'mat_rd_ops':ds.get('mat_rd_ops',0),'test_pass':0}}
+metrics={{'total_bytes':functional_container_bytes,'dram_elements':dram_elements,'functional_container_bytes':functional_container_bytes,'instr_count':len(rec.inst_trace),'mv_mul_count':mv,'mat_rd_ops':ds.get('mat_rd_ops',0),'test_pass':0}}
 metrics.update(calculate_cost_metrics(tracer.events, ds, {config["probe"].get("cost_model")!r}))
 if timed:
     metrics.update(timed.metrics())
 cycle_model={config["probe"].get("cycle_model")!r}
+cycle_schedule=None
 if cycle_model:
     import yaml
-    sys.path.insert(0, 'jimu-dse/timing')
-    from scalesim_adapter import simulate_trace
     with open(cycle_model['profile'], encoding='utf-8') as handle:
         timing_profile=yaml.safe_load(handle)
-    metrics.update(simulate_trace(
-        tracer.events, {{'dim':dim, 'hidden':h}}, timing_profile,
-        schedule_path={(str(timing_schedule_path) if timing_schedule_path else None)!r},
-    ))
-schedule=timed.timeline if timed else None
+    if timing_profile.get('backend') == 'verilator-rtl':
+        from emulator.npu_rtl_sim import simulate_trace as simulate_rtl_trace
+        cycle_schedule=simulate_rtl_trace(
+            tracer.events,
+            {{'native_dim':dim, 'hidden':h, 'seq_len':sl}},
+            timing_profile,
+            artifact_path={(str(timing_schedule_path) if timing_schedule_path else None)!r},
+        )
+        metrics.update(cycle_schedule['metrics'])
+        metrics['rtl_payload_bytes']=dram_elements*int(
+            cycle_schedule.get('profile', {{}}).get('memory_element_bytes', 2)
+        )
+    else:
+        sys.path.insert(0, 'jimu-dse/timing')
+        from scalesim_adapter import simulate_trace as simulate_scalesim_trace
+        metrics.update(simulate_scalesim_trace(
+            tracer.events, {{'dim':dim, 'hidden':h}}, timing_profile,
+            schedule_path={(str(timing_schedule_path) if timing_schedule_path else None)!r},
+        ))
+        if {bool(timing_schedule_path)!r}:
+            schedule_file=Path({(str(timing_schedule_path) if timing_schedule_path else '')!r})
+            if schedule_file.is_file():
+                cycle_schedule=json.loads(schedule_file.read_text(encoding='utf-8'))
+schedule=(
+    cycle_schedule.get('events', []) if cycle_schedule is not None
+    else (timed.timeline if timed else None)
+)
 if schedule is None and {str(timing_schedule_path) if timing_schedule_path else None!r}:
     schedule_file=Path({str(timing_schedule_path) if timing_schedule_path else None!r})
     if schedule_file.is_file():
@@ -1180,7 +1348,10 @@ if schedule is None and {str(timing_schedule_path) if timing_schedule_path else 
 if {str(cross_layer_json_path) if cross_layer_json_path else None!r}:
     graph=build_cross_layer_graph(
         tracer.events, manifest=manifest, schedule=schedule,
-        profile_name=(timed.profile.name if timed else None),
+        profile_name=(
+            cycle_schedule.get('model') if cycle_schedule is not None
+            else (timed.profile.name if timed else None)
+        ),
     )
     graph_json=Path({str(cross_layer_json_path) if cross_layer_json_path else None!r})
     graph_json.parent.mkdir(parents=True, exist_ok=True)
@@ -1327,9 +1498,11 @@ def classify_agent_start_failure(
 def invoke_agent(
     config: dict[str, Any], prompt: str,
     heartbeat: Callable[[float], None] | None = None,
+    raw_output_prefix: Path | None = None,
 ) -> dict[str, Any]:
     backend = config["agent"]["backend"]
-    executable = shutil.which(backend)
+    agent_env = _agent_environment()
+    executable = shutil.which(backend, path=agent_env.get("PATH"))
     if not executable:
         return {
             "status": "agent_unavailable", "exit_code": None,
@@ -1360,7 +1533,17 @@ def invoke_agent(
         for item in config["skills"]:
             command += ["--skill", str(_repo_path(item["path"], "skill.path"))]
         command += ["-p", prompt]
-    result = _run(command, timeout=timeout, heartbeat=heartbeat)
+    result = _run(
+        command, timeout=timeout, heartbeat=heartbeat,
+        env=agent_env, raw_output_prefix=raw_output_prefix,
+    )
+    if raw_output_prefix is not None:
+        result["stdout_log"] = _display_path(
+            Path(f"{raw_output_prefix}.stdout.jsonl")
+        )
+        result["stderr_log"] = _display_path(
+            Path(f"{raw_output_prefix}.stderr.log")
+        )
     result["agent_started"] = (
         result["exit_code"] == 0 or _structured_agent_started(result)
     )
@@ -1550,15 +1733,23 @@ def _summary_report(summary: dict[str, Any]) -> str:
         "|---:|---|---|---:|---|",
     ]
     for item in summary["iterations"]:
-        gates = "PASS" if item.get("gates_passed") else "FAIL"
+        gates = (
+            "SKIPPED" if "gates" not in item
+            else "PASS" if item.get("gates_passed") else "FAIL"
+        )
         lines.append(
             f"| {item['iteration']} | {item['status']} | {gates} | "
             f"{item.get('score', 0):.6f} | {item.get('promoted', False)} |"
         )
     if summary.get("interruptions"):
         latest = summary["interruptions"][-1]
+        interruption_heading = (
+            "## Latest interruption"
+            if summary.get("status") == "interrupted"
+            else "## Earlier interruption (recovered)"
+        )
         lines += [
-            "", "## Latest interruption", "",
+            "", interruption_heading, "",
             f"- Reason: `{latest.get('reason')}`",
             f"- Iteration: `{latest.get('iteration')}`",
             f"- Exit code: `{latest.get('exit_code')}`",
@@ -1610,7 +1801,45 @@ def _summary_report(summary: dict[str, Any]) -> str:
             f"| Predicted NPU cycles | {base_cycles:g} | {best_cycles:g} |",
             f"| Improvement | — | {improvement:.2f}% |",
         ]
-    if "parallel_predicted_npu_cycles" in baseline:
+    if "rtl_predicted_npu_cycles" in baseline:
+        base_rtl = float(baseline["rtl_predicted_npu_cycles"])
+        best_rtl = float(best.get("rtl_predicted_npu_cycles", base_rtl))
+        rtl_improvement = (
+            0.0 if base_rtl == 0
+            else (base_rtl - best_rtl) * 100.0 / abs(base_rtl)
+        )
+        lines += [
+            "", "## Verilator RTL resource schedule", "",
+            "> This is the cycle count from the synthesizable Jimu command/control "
+            "RTL under the versioned profile; numerical values are gated by the "
+            "functional emulator.",
+            "",
+            "| Metric | Baseline | Best |",
+            "|---|---:|---:|",
+            f"| RTL predicted cycles | {base_rtl:g} | {best_rtl:g} |",
+            f"| RTL fully idle cycles | {baseline.get('rtl_idle_cycles', 0)} | {best.get('rtl_idle_cycles', 0)} |",
+            f"| Retirement tail cycles | {baseline.get('rtl_retirement_tail_cycles', 0)} | {best.get('rtl_retirement_tail_cycles', 0)} |",
+            f"| Net parallelism savings | {baseline.get('net_parallelism_savings_cycles', baseline.get('overlap_saved_cycles', 0))} | {best.get('net_parallelism_savings_cycles', best.get('overlap_saved_cycles', 0))} |",
+            f"| Gross overlapped work | {baseline.get('gross_overlap_cycles', 0)} | {best.get('gross_overlap_cycles', 0)} |",
+            f"| Scheduler idle holes | {baseline.get('scheduler_idle_hole_cycles', 0)} | {best.get('scheduler_idle_hole_cycles', 0)} |",
+            f"| Memory/compute overlap cycles | {baseline.get('memory_compute_overlap_cycles', 0)} | {best.get('memory_compute_overlap_cycles', 0)} |",
+            f"| Maximum concurrent operations | {baseline.get('max_concurrent_ops', 0)} | {best.get('max_concurrent_ops', 0)} |",
+            f"| Load utilization | {float(baseline.get('load_utilization', 0)):.2%} | {float(best.get('load_utilization', 0)):.2%} |",
+            f"| Store utilization | {float(baseline.get('store_utilization', 0)):.2%} | {float(best.get('store_utilization', 0)):.2%} |",
+            f"| MVU utilization | {float(baseline.get('mvu_utilization', 0)):.2%} | {float(best.get('mvu_utilization', 0)):.2%} |",
+            f"| Vector utilization | {float(baseline.get('vector_utilization', 0)):.2%} | {float(best.get('vector_utilization', 0)):.2%} |",
+            f"| Dependency stall counter | {baseline.get('rtl_counter_dependency_stall_cycles', 0)} | {best.get('rtl_counter_dependency_stall_cycles', 0)} |",
+            f"| DRAM stall counter | {baseline.get('rtl_counter_dram_stall_cycles', 0)} | {best.get('rtl_counter_dram_stall_cycles', 0)} |",
+            f"| SRAM bank stall counter | {baseline.get('rtl_counter_bank_stall_cycles', 0)} | {best.get('rtl_counter_bank_stall_cycles', 0)} |",
+            f"| RTL-cycle improvement | — | {rtl_improvement:.2f}% |",
+            "",
+            "> Stall counters are non-additive pressure indicators; do not sum "
+            "them to explain the makespan delta.",
+        ]
+    if (
+        "parallel_predicted_npu_cycles" in baseline
+        and "rtl_predicted_npu_cycles" not in baseline
+    ):
         base_parallel = float(baseline["parallel_predicted_npu_cycles"])
         best_parallel = float(best.get(
             "parallel_predicted_npu_cycles", base_parallel
@@ -1840,6 +2069,7 @@ def execute_run(
                     f"{iteration_label}: agent still running, "
                     f"elapsed={elapsed:.0f}s"
                 )) if progress else None,
+                run_dir / f"agent-{iteration}",
             )
             changed, source_after = _snapshot_changes(source_before)
             log(

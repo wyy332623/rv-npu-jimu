@@ -38,9 +38,18 @@ python3 jimu-dse/scripts/closed_loop.py run --goal combined \
 Long runs print timestamped progress messages to stderr. The messages identify
 the resolved run directory, baseline and per-iteration probes, Agent start and
 20-minute heartbeat, changed-file count, each acceptance gate, score,
-promotion, checkpoints, and final stop reason. Subprocess stdout/stderr remains
-bounded in the JSON artifacts instead of flooding the terminal. Use `--quiet`
-to suppress progress while retaining the final report.
+promotion, checkpoints, and final stop reason. Subprocess excerpts remain
+bounded in the JSON artifacts instead of flooding the terminal; the complete
+Agent streams are retained as `agent-N.stdout.jsonl` and
+`agent-N.stderr.log`. Use `--quiet` to suppress progress while retaining the
+final report.
+
+The shell wrapper and Makefile prefer `.venv/bin/python` (or the Windows
+`.venv/Scripts/python.exe`) when it exists, then fall back to `python3`. This
+same PATH is inherited by command gates, so `python3 -m pytest` does not
+silently select a dependency-free system interpreter. The driver also searches
+`~/.npm-global/bin` and `~/.local/bin` when locating Agent CLIs in a
+non-interactive shell.
 
 Explicit loop controls are available without editing YAML:
 
@@ -95,7 +104,8 @@ against the repository root and may not escape it.
 | `loop` | `max_iterations`, `min_score_delta`, `max_no_improvement`, optional `target_score` |
 | `artifacts` | switches for candidates, diffs, prompts, probes, and graphs |
 
-Built-in metrics are `total_bytes`, `instr_count`, `mv_mul_count`,
+Built-in metrics are `total_bytes`, `dram_elements`,
+`functional_container_bytes`, `rtl_payload_bytes`, `instr_count`, `mv_mul_count`,
 `mat_rd_ops`, `test_pass`, `memory_access_count`, `memory_read_count`,
 `memory_write_count`, `register_access_count`, `register_read_count`,
 `register_write_count`, and `estimated_time`. A score metric must also appear
@@ -112,6 +122,28 @@ and `schedule_chain_count`. Requesting one requires:
 cycle_model:
   profile: jimu-dse/timing/scalesim-parallel-dim4.yaml
 ```
+
+The schema-v3 Verilator backend provides `rtl_predicted_npu_cycles`, controller
+and DRAM utilization, memory/compute overlap, concurrency, and RTL counters for
+front-end, dependency, unit, DRAM, bank, and fence stalls:
+
+```yaml
+cycle_model:
+  profile: jimu-dse/timing/jimu-rtl-dim4.yaml
+```
+
+For RTL schedules, `rtl_predicted_npu_cycles` and
+`rtl_completion_makespan_cycles` end at the last operation completion;
+`rtl_idle_cycles` includes the in-order retirement tail. The compatibility
+metric `overlap_saved_cycles` means net savings versus serial command duration.
+Use `gross_overlap_cycles`, `scheduler_idle_hole_cycles`, and
+`memory_compute_overlap_cycles` to distinguish overlapping work, inactive
+schedule holes, and actual DRAM/compute intersection. RTL stall counters are
+non-additive pressure indicators, not independent cycle penalties.
+
+`total_bytes` is the legacy float32 emulator-container byte count. For a
+representation-neutral comparison use `dram_elements`; for modeled bus bytes
+use `rtl_payload_bytes`.
 
 Command gates support:
 
@@ -292,6 +324,28 @@ All DRAM transfers still serialize on the shared `dram_bus`. This remains a
 resource-level analytical model rather than native RTL cycle accuracy. See
 `timing-simulator-selection.md` for the model boundary and calibration path.
 
+### Verilator RTL scoring goal
+
+`rtl-cycle-optimization` runs the same functional/timed probe, then replays its
+complete dynamic command trace through the synthesizable RTL timing core.  It
+scores `rtl_predicted_npu_cycles` and writes the RTL schedule to the normal
+`timing-schedule.json` contract, including exact dependency resources and bank
+stall attribution.
+
+```bash
+python3 jimu-dse/scripts/closed_loop.py validate-config \
+  --goal rtl-cycle-optimization
+python3 jimu-dse/scripts/closed_loop.py render-prompt \
+  --goal rtl-cycle-optimization
+JIMU_MAX_ITER=1 bash jimu-dse/scripts/npu_closed_loop.sh \
+  --goal rtl-cycle-optimization --agent opencode
+```
+
+Use this goal as the promotion tier for firmware scheduling/data-flow changes.
+The existing SCALE-Sim goal remains useful for faster analytical exploration.
+Verilator must be installed locally or in the profile's configured WSL distro.
+The profile and RTL are outside the agent's allowed files.
+
 ## Creating a goal
 
 1. Copy an existing directory under `jimu-dse/goals/`.
@@ -312,11 +366,16 @@ Each `jimu-dse/results/run-*` directory contains:
 - `baseline/timing-schedule.json`, `pre-iteration-N/timing-schedule.json`, and
   `iteration-N/timing-schedule.json` for schema-v2 cycle runs
 - `iteration-N.json` with agent status, gates, raw metrics, score, and promotion
+- `agent-N.stdout.jsonl` and `agent-N.stderr.log` with the complete Agent output
 - `candidate_best.c`
 - `run-summary.json` and human-readable `report.md`
 
 Agent unavailable, timeout, no change, build failure, probe failure, gate
 failure, and lack of score improvement are represented as distinct statuses.
+When an Agent makes no change, the acceptance gates are reported as `SKIPPED`,
+not as failures. On WSL, the driver exports the worktree's resolved `GIT_DIR`
+and `GIT_WORK_TREE` so an Agent can inspect a worktree whose gitfile was created
+by Windows Git.
 
 `make clean` removes only rebuildable artifacts and deliberately preserves
 closed-loop results. Use `make clean-results` only when no run is active and

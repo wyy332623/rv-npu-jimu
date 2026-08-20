@@ -28,6 +28,7 @@ def test_all_builtin_goals_validate():
     for goal in (
         "dram-optimization", "compute-optimization", "combined",
         "weighted-latency-optimization", "cycle-latency-optimization",
+        "rtl-cycle-optimization",
     ):
         loaded = closed_loop.load_config(goal)
         assert loaded["schema_version"] == 1
@@ -70,6 +71,7 @@ def test_prompt_is_stable_and_skill_ordered(config):
     assert "Iteration: 2" in first
     assert "Never run `make clean` from the repository root" in first
     assert "Never delete, move, rename, or modify `jimu-dse/results`" in first
+    assert "non-interactive optimization iteration" in first
 
 
 def test_cycle_prompt_includes_iteration_work_contract():
@@ -106,6 +108,113 @@ def test_cycle_goal_scores_parallel_metric_and_renders_scheduler_context():
     }]
     assert "single shared DRAM bus can overlap with independent compute" in prompt
     assert "parallel_predicted_npu_cycles" in prompt
+
+
+def test_rtl_goal_scores_verilator_makespan_and_renders_hardware_context():
+    config = closed_loop.load_config("rtl-cycle-optimization")
+    prompt = closed_loop.render_prompt(
+        config,
+        1,
+        {
+            "rtl_predicted_npu_cycles": 3673,
+            "memory_compute_overlap_cycles": 850,
+            "rtl_counter_bank_stall_cycles": 76,
+        },
+        [],
+    )
+
+    assert config["acceptance"]["score"] == [{
+        "metric": "rtl_predicted_npu_cycles",
+        "direction": "minimize",
+        "weight": 1.0,
+    }]
+    assert config["probe"]["cycle_model"]["profile"].endswith(
+        "jimu-rtl-dim4.yaml"
+    )
+    assert "synthesizable Verilator RTL timing core" in prompt
+    assert "128-bit semantic scoreboard" in prompt
+    assert "rtl_predicted_npu_cycles" in prompt
+
+
+def test_rtl_dram_goal_replays_only_historical_vrf_cache_strategy():
+    config = closed_loop.load_config("rtl-dram-optimization")
+    prompt = closed_loop.render_prompt(
+        config,
+        1,
+        {
+            "rtl_predicted_npu_cycles": 5000,
+            "total_bytes": 10000,
+            "memory_compute_overlap_cycles": 600,
+        },
+        ["K save/load cluster", "V save/load cluster"],
+        graph_context="critical K/V DRAM events",
+    )
+
+    assert config["target"]["hardware"] == {
+        "dim": 2, "hidden": 4, "num_head": 2,
+    }
+    assert [skill["name"] for skill in config["skills"]] == [
+        "dag-analyze", "vrf-cache", "self-verify",
+    ]
+    assert config["acceptance"]["score"] == [{
+        "metric": "rtl_predicted_npu_cycles",
+        "direction": "minimize",
+        "weight": 1.0,
+    }]
+    assert config["probe"]["cycle_model"]["profile"].endswith(
+        "jimu-rtl-dim2.yaml"
+    )
+    assert config["probe"]["workload_manifest"].endswith(
+        "bert-dim2-seq6.yaml"
+    )
+    assert config["loop"]["max_iterations"] == 1
+    assert "only the historical dim=2 K/V VRF-cache transformation" in prompt
+    assert "different optimization even if" in prompt
+
+
+def test_rtl_timing_schedule_context_uses_rtl_resources(tmp_path):
+    schedule_path = tmp_path / "timing-schedule.json"
+    schedule_path.write_text(json.dumps({
+        "backend": "verilator-rtl",
+        "metrics": {
+            "rtl_predicted_npu_cycles": 100,
+            "parallel_predicted_npu_cycles": 100,
+            "overlap_saved_cycles": 20,
+            "memory_compute_overlap_cycles": 10,
+        },
+        "optimization_diagnostics": {
+            "resource_bottlenecks": [
+                {"resource": "vector", "utilization": 0.6},
+            ],
+            "top_blockers": [{
+                "idx": 4, "op": "V_RD", "wait_cycles": 7,
+                "reasons": ["bank"],
+            }],
+        },
+    }), encoding="utf-8")
+
+    context = closed_loop._timing_schedule_context(schedule_path)
+
+    assert "RTL resource mapping" in context
+    assert "128-bit RTL scoreboard" in context
+    assert "rtl_cycles=100" in context
+    assert "wait=7 cycles, reasons=bank" in context
+
+
+def test_invalid_rtl_cycle_profile_is_rejected(monkeypatch):
+    config = closed_loop.load_config("rtl-cycle-optimization")
+    profile_path = ROOT / "jimu-dse" / "timing" / "jimu-rtl-dim4.yaml"
+    original_read = closed_loop._read_yaml
+    profile = copy.deepcopy(original_read(profile_path))
+    profile["rtl"]["resource_bits"] = 64
+
+    monkeypatch.setattr(
+        closed_loop,
+        "_read_yaml",
+        lambda path: profile if path == profile_path.resolve() else original_read(path),
+    )
+    with pytest.raises(closed_loop.ConfigError, match="requires resource_bits=128"):
+        closed_loop.validate_config(config)
 
 
 def test_timing_schedule_context_is_actionable_and_bounded(tmp_path):
@@ -279,6 +388,26 @@ def test_run_report_includes_parallel_schedule_metrics():
     assert "| DRAM bus utilization | 50.00% | 50.00% |" in report
 
 
+def test_completed_report_marks_old_interruption_as_recovered():
+    report = closed_loop._summary_report({
+        "goal": "rtl-cycle-optimization",
+        "status": "completed",
+        "stop_reason": "max_iterations",
+        "run_dir": "jimu-dse/results/fake",
+        "iterations": [],
+        "next_iteration": 2,
+        "best_iteration": 1,
+        "best_score": 0.1,
+        "baseline_metrics": {},
+        "best_metrics": {},
+        "interruptions": [{"reason": "executable_not_found", "iteration": 1}],
+        "reproduce_command": "python closed_loop.py inspect-run fake",
+    })
+
+    assert "## Earlier interruption (recovered)" in report
+    assert "## Latest interruption" not in report
+
+
 def test_root_clean_preserves_run_results():
     makefile = (ROOT / "Makefile").read_text(encoding="utf-8")
     clean_recipe = makefile.split("\nclean:\n", 1)[1].split("\n\n", 1)[0]
@@ -359,7 +488,7 @@ def test_gate_failure_is_reported(config, monkeypatch):
 
 
 def test_agent_unavailable(monkeypatch, config):
-    monkeypatch.setattr(closed_loop.shutil, "which", lambda _: None)
+    monkeypatch.setattr(closed_loop.shutil, "which", lambda *_args, **_kwargs: None)
     result = closed_loop.invoke_agent(config, "prompt")
     assert result["status"] == "agent_unavailable"
 
@@ -395,6 +524,62 @@ def test_run_heartbeat_supports_disabled_timeout():
     assert result["exit_code"] == 0
     assert not result["timed_out"]
     assert beats
+
+
+def test_run_preserves_full_raw_output_while_bounding_summary(tmp_path):
+    prefix = tmp_path / "agent-1"
+    result = closed_loop._run(
+        [closed_loop.sys.executable, "-c", "print('x' * 25000)"],
+        timeout=10,
+        raw_output_prefix=prefix,
+    )
+
+    raw = (tmp_path / "agent-1.stdout.jsonl").read_text(encoding="utf-8")
+    assert len(raw) > 25000
+    assert "...[output truncated]..." in result["stdout"]
+    assert len(result["stdout"]) <= 20000
+    assert (tmp_path / "agent-1.stderr.log").is_file()
+
+
+def test_project_environment_prefers_local_virtualenv(tmp_path, monkeypatch):
+    venv_bin = tmp_path / ".venv" / "bin"
+    venv_bin.mkdir(parents=True)
+    monkeypatch.setattr(closed_loop, "REPO_ROOT", tmp_path)
+    monkeypatch.setenv("PATH", "system-bin")
+
+    env = closed_loop._project_environment()
+
+    assert env["PATH"].split(closed_loop.os.pathsep)[0] == str(venv_bin)
+
+
+def test_agent_lookup_uses_project_environment_path(monkeypatch, config):
+    observed = {}
+    monkeypatch.setattr(
+        closed_loop, "_agent_environment",
+        lambda: {"PATH": "/agent-bin:/system-bin"},
+    )
+
+    def which(name, path=None):
+        observed.update({"name": name, "path": path})
+        return None
+
+    monkeypatch.setattr(closed_loop.shutil, "which", which)
+
+    result = closed_loop.invoke_agent(config, "prompt")
+
+    assert result["status"] == "agent_unavailable"
+    assert observed == {
+        "name": config["agent"]["backend"],
+        "path": "/agent-bin:/system-bin",
+    }
+
+
+def test_windows_gitfile_is_resolved_for_wsl():
+    resolved = closed_loop._resolve_worktree_git_dir(
+        r"D:\repo\.git\worktrees\candidate", platform="posix"
+    )
+
+    assert resolved == "/mnt/d/repo/.git/worktrees/candidate"
 
 
 def test_default_heartbeat_interval_is_twenty_minutes(monkeypatch):
@@ -607,6 +792,7 @@ def test_loop_stops_after_no_change(monkeypatch, config, tmp_path, capsys):
     summary = closed_loop.execute_run(resolved, results_root=tmp_path)
     assert summary["stop_reason"] == "no_improvement_limit"
     assert summary["iterations"][0]["status"] == "no_change"
+    assert "| 1 | no_change | SKIPPED |" in closed_loop._summary_report(summary)
     progress = capsys.readouterr().err
     assert "run started: goal=dram-optimization" in progress
     assert "baseline probe passed" in progress

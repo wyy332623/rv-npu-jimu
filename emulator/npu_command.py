@@ -22,6 +22,7 @@ OP_VV_MIN = 30; OP_VV_MUL_INC = 31
 OP_VV_A_SUB_B_INC = 32; OP_VV_B_SUB_A_INC = 33
 OP_S_RECIP = 35; OP_V_EXP = 37; OP_S_SQRT = 38; OP_SS_MUL = 40
 OP_V_GELU = 42; OP_V_FUNC = 43; OP_SS_ADD = 44; OP_INST_ISSUE = 45
+REG_TILE_ROWS = 1
 
 MEM_FILL = 12
 MEM_SPU_ADD_REDUCE = 14; MEM_SPU_MAX_REDUCE = 15
@@ -106,6 +107,7 @@ class NpuCommand:
     opd0: int
     opd1: int
     full_operand: int
+    tile_rows: int = 1
     chain_id: int = 0
     raw_instruction_idx: int = -1
     expanded_idx: int = 0
@@ -127,6 +129,7 @@ class NpuCommand:
             "opd0": self.opd0,
             "opd1": self.opd1,
             "full_operand": self.full_operand,
+            "tile_rows": self.tile_rows,
             "raw_instruction_idx": self.raw_instruction_idx,
             "expanded_idx": self.expanded_idx,
             "inc_parent_opcode": self.inc_parent_opcode,
@@ -214,9 +217,11 @@ def resolve_defs_uses(opcode: int, opd0: int, opd1: int,
     elif opcode == OP_V_WR_DRAM:
         uses.append(("pipe",)); defs.append(("DRAM", full_operand))
     elif opcode == OP_M_RD_DRAM:
-        uses.append(("DRAM", full_operand)); defs.append(("MRF",))
+        uses.extend([("DRAM", full_operand), ("REG", REG_TILE_ROWS)])
+        defs.append(("MRF",))
     elif opcode == OP_M_WR_DRAM:
-        uses.append(("MRF",)); defs.append(("DRAM", full_operand))
+        uses.extend([("MRF",), ("REG", REG_TILE_ROWS)])
+        defs.append(("DRAM", full_operand))
     elif opcode == OP_SS_ADD:
         uses.append(("SRF", opd0)); defs.append(("SRF", opd1))
     elif opcode in (OP_S_RECIP, OP_S_SQRT, OP_SS_MUL):
@@ -225,11 +230,13 @@ def resolve_defs_uses(opcode: int, opd0: int, opd1: int,
 
 
 def memory_access(opcode: int, full_operand: int, native_dim: int,
+                  tile_rows: int = 1,
                   manifest: WorkloadManifest | None = None) -> MemoryAccess | None:
     if opcode in (OP_V_RD_DRAM, OP_V_WR_DRAM):
         elements = native_dim
     elif opcode in (OP_M_RD_DRAM, OP_M_WR_DRAM):
-        elements = native_dim * native_dim
+        matrix_dim = max(1, int(tile_rows)) * native_dim
+        elements = matrix_dim * matrix_dim
     else:
         return None
     direction = "read" if opcode in (OP_V_RD_DRAM, OP_M_RD_DRAM) else "write"
@@ -240,6 +247,7 @@ def memory_access(opcode: int, full_operand: int, native_dim: int,
 
 def decode_executed(*, command_id: int, raw: int, opcode: int, opd0: int,
                     opd1: int, full_operand: int, native_dim: int,
+                    tile_rows: int = 1,
                     chain_id: int = 0, raw_instruction_idx: int = -1,
                     expanded_idx: int = 0,
                     source: SourceLocation | None = None,
@@ -250,17 +258,21 @@ def decode_executed(*, command_id: int, raw: int, opcode: int, opd0: int,
     return NpuCommand(
         command_id=command_id, raw=raw, opcode=opcode,
         op=opcode_name(opcode, opd0), opd0=opd0, opd1=opd1,
-        full_operand=full_operand, chain_id=chain_id,
+        full_operand=full_operand, tile_rows=max(1, int(tile_rows)),
+        chain_id=chain_id,
         raw_instruction_idx=raw_instruction_idx, expanded_idx=expanded_idx,
         inc_parent_opcode=raw_opcode if raw_opcode in INC_OPCODES else None,
         target_unit=target_unit(opcode, opd0), defs=defs, uses=uses,
-        memory=memory_access(opcode, full_operand, native_dim, manifest),
+        memory=memory_access(
+            opcode, full_operand, native_dim, tile_rows, manifest
+        ),
         source=source or SourceLocation(), cpu_cycle=cpu_cycle,
     )
 
 
 def decode_raw(raw: int, *, command_id: int = 0, chain_id: int = 0,
-               native_dim: int = 1, source: SourceLocation | None = None,
+               native_dim: int = 1, tile_rows: int = 1,
+               source: SourceLocation | None = None,
                cpu_cycle: int | None = None,
                manifest: WorkloadManifest | None = None) -> NpuCommand:
     raw_opcode = (raw >> 24) & 0xFF
@@ -271,6 +283,7 @@ def decode_raw(raw: int, *, command_id: int = 0, chain_id: int = 0,
     command = decode_executed(
         command_id=command_id, raw=raw, opcode=opcode, opd0=opd0,
         opd1=opd1, full_operand=full_operand, native_dim=native_dim,
+        tile_rows=tile_rows,
         chain_id=chain_id, raw_instruction_idx=command_id,
         source=source, cpu_cycle=cpu_cycle, manifest=manifest,
     )

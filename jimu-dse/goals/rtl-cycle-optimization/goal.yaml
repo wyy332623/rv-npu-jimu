@@ -1,0 +1,136 @@
+schema_version: 1
+name: rtl-cycle-optimization
+description: Minimize Verilator RTL NPU makespan by changing BERT firmware data flow.
+target:
+  firmware: firmware/bert/bert_layer.c
+  baseline: jimu-dse/baseline/bert_layer.c
+  allowed_files: [firmware/bert/bert_layer.c]
+  hardware: {dim: 4, hidden: 4, num_head: 2}
+  sequence_lengths: [2, 6]
+agent:
+  backend: opencode
+  model: opencode/big-pickle
+  timeout_seconds: 1800
+  work_budget:
+    max_primary_hypotheses: 1
+    analysis_deadline_seconds: 600
+    edit_deadline_seconds: 900
+    return_deadline_seconds: 1500
+  context_files:
+    - firmware/bert/bert_layer.c
+    - jimu-dse/timing/jimu-rtl-dim4.yaml
+    - docs/rtl-bert-baseline.md
+prompt:
+  goal: Minimize RTL NPU makespan at sequence length 6 using data-flow transformations that preserve BERT outputs.
+  constraints:
+    - Only modify the configured firmware target.
+    - Preserve numerical correctness for every configured BERT case.
+    - Do not modify the RTL, timing profile, simulator adapter, emulator, tests, artifacts, or metrics.
+    - Optimize rtl_predicted_npu_cycles rather than Python wall-clock time or summed per-command waits.
+    - Implement at most one primary hypothesis per iteration.
+    - On iteration 1, if repeated single-tile K or V weight loads remain, prioritize retaining that tile in MRF across its existing all-position loop; otherwise select the next schedule-backed hypothesis. Keep the multi-tile path unchanged and do not add VRF bias caching unless measured evidence justifies the added vector work.
+    - This loop is non-interactive; do not ask for confirmation or offer options instead of editing.
+  self_verify: Run at most one targeted quick check, then return control; the closed-loop controller owns complete gates and official RTL scoring.
+  template: |
+    You are optimizing {target_file} against a synthesizable Verilator RTL timing core.
+    Goal: {goal_name} — {goal_description}
+    Iteration: {iteration}
+    Hardware: {hardware}
+
+    Current RTL metrics:
+    {metrics}
+
+    The RTL has a finite ROB, independent load/store/MVU/vector/control
+    controllers, a shared DRAM bus, a 128-bit semantic scoreboard, banked SRAM
+    ports, and chain fences. DRAM and independent compute run concurrently.
+    Optimize makespan using affirmative dependency and capacity evidence.
+
+    Scored data-flow evidence:
+    {graph_context}
+
+    Start from causal/near-causal events, dependency_resources, and RTL
+    stall reasons. Dynamic command IDs are not source lines. Predict the next
+    bottleneck and do not equate summed queue waits with wall-clock savings.
+
+    Constraints:
+    {constraints}
+
+    Apply these skills in order:
+    {skills}
+
+    Acceptance gates:
+    {gate_commands}
+    Self verification: {self_verify}
+skills:
+  - name: rtl-dataflow
+    path: jimu-dse/docs/skills/isa/rtl-dataflow.md
+  - name: dataflow-optimize
+    path: jimu-dse/docs/skills/isa/dataflow-optimize.md
+  - name: self-verify
+    path: jimu-dse/docs/skills/isa/self-verify.md
+probe:
+  workload_manifest: jimu-dse/workloads/bert-dim4-seq6.yaml
+  timed_device:
+    profile: jimu-dse/timing/npu-timed-v1.yaml
+  metrics:
+    - rtl_predicted_npu_cycles
+    - rtl_completion_makespan_cycles
+    - rtl_idle_cycles
+    - rtl_retirement_tail_cycles
+    - serial_command_cycles
+    - overlap_saved_cycles
+    - net_parallelism_savings_cycles
+    - gross_overlap_cycles
+    - scheduler_idle_hole_cycles
+    - memory_compute_overlap_cycles
+    - memory_compute_overlap_ratio
+    - max_concurrent_ops
+    - dram_bus_utilization
+    - load_utilization
+    - store_utilization
+    - mvu_utilization
+    - vector_utilization
+    - control_utilization
+    - rtl_counter_dependency_stall_cycles
+    - rtl_counter_dram_stall_cycles
+    - rtl_counter_bank_stall_cycles
+    - rtl_counter_barrier_stall_cycles
+    - rtl_counter_frontend_full_stall_cycles
+    - dram_elements
+    - functional_container_bytes
+    - rtl_payload_bytes
+    - timed_wall_cycles
+    - timed_fifo_full_stall_cycles
+    - timed_scoreboard_stall_cycles
+    - timed_dram_stall_cycles
+    - timed_frontend_overflow_count
+  scoring_sequence_length: 6
+  cycle_model:
+    profile: jimu-dse/timing/jimu-rtl-dim4.yaml
+  cycle_limit: 300000
+  dag: {enabled: true}
+acceptance:
+  gates:
+    - {name: allowed-files, type: allowed_files}
+    - {name: firmware-build, type: build}
+    - {name: probe-complete, type: probe}
+    - name: numerical-correctness
+      type: command
+      command: python3 -m pytest tests/integration/test_bert_e2e.py -k "dim{dim} and h{hidden}" --no-header -q
+      timeout_seconds: 600
+      success_codes: [0]
+  score:
+    - {metric: rtl_predicted_npu_cycles, direction: minimize, weight: 1.0}
+loop:
+  mode: goal_driven
+  max_iterations: 20
+  min_score_delta: 0.001
+  max_no_improvement: 20
+  target_score: 0.10
+  evaluate_timeout_candidate: true
+artifacts:
+  save_candidates: true
+  save_diffs: true
+  save_prompts: true
+  save_probes: true
+  save_graphs: true

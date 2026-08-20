@@ -73,6 +73,32 @@ python3 scripts/analyze_firmware.py \
 See `docs/unified-firmware-optimization.md` for the manifest, custom build,
 cross-layer graph, agent evidence, and calibration contracts.
 
+### Verilator RTL Timing Backend
+
+For hardware-visible load/store/compute concurrency, ROB dependencies, SRAM
+bank conflicts, chain fences, cycle counters, and optional VCD waveforms:
+
+```bash
+python3 scripts/analyze_firmware.py \
+  --manifest jimu-dse/workloads/bert-dim4-seq6.yaml \
+  --rtl-profile jimu-dse/timing/jimu-rtl-dim4.yaml \
+  -o _out/bert-rtl --no-render
+```
+
+The same backend is available to the agent loop as a scored goal:
+
+```bash
+python3 jimu-dse/scripts/closed_loop.py validate-config \
+  --goal rtl-cycle-optimization
+bash jimu-dse/scripts/npu_closed_loop.sh \
+  --goal rtl-cycle-optimization --agent opencode
+```
+
+The RTL is a command/control timing model; functional and numerical equivalence
+continues to come from the existing emulator.  See
+`docs/rtl-timing-simulator.md` for the architecture, open-source design study,
+optimization space, artifacts, and fidelity limits.
+
 ## Running Tests
 
 ```bash
@@ -98,6 +124,11 @@ emulator/
   workload.py         Tensor/observable manifest and ELF source mapping
   npu_cross_layer_graph.py  Tensor → command → timing evidence graph
   trace_recorder.py   MMIO instruction trace recorder
+  npu_rtl_sim.py      Trace encoder + Verilator RTL schedule adapter
+rtl/
+  jimu_npu_timing_core.sv  Synthesizable ROB/DMA/compute timing core
+sim/
+  jimu_rtl_harness.cpp     Verilator trace replay, counters, and VCD harness
 iss/
   mini_rv64.py        MiniRV64 ISS (RV64IM, pure Python)
 tests/           pytest suite + golden reference generator
@@ -115,6 +146,8 @@ jimu-dse/        Closed-loop firmware optimization pipeline
 | `docs/test-guide.md` | Test pyramid, fixtures, CI |
 | `docs/build-guide.md` | Tool installation, build steps |
 | `docs/unified-firmware-optimization.md` | Generic firmware timing, tensor semantics, graphs, and agent evidence |
+| `docs/rtl-timing-simulator.md` | RTL architecture, design sources, performance counters, and optimization space |
+| `docs/rtl-bert-baseline.md` | Reproducible dim4/seq6 RTL baseline and ranked data-flow hypotheses |
 
 ## License
 

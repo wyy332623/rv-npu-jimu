@@ -153,6 +153,10 @@ def build_cross_layer_graph(
     profile_name: str | None = None,
 ) -> CrossLayerGraph:
     timing_by_command = _timing_index(schedule)
+    explicit_schedule_dependencies = any(
+        "dependency_predecessors" in record
+        for record in timing_by_command.values()
+    )
     raw_command_schedule = any(
         "sequence" in record and "enqueue_cycle" in record
         for record in timing_by_command.values()
@@ -206,27 +210,51 @@ def build_cross_layer_graph(
         nodes.append(node)
         command_nodes[command_id] = node
 
-        for resource in event.get("uses", []):
-            key = _resource_key(resource)
-            if key in last_writer:
-                edges.add(GraphEdge(
-                    f"command:{last_writer[key]}", node_id, "RAW",
-                    _resource_label(key),
-                ))
-            readers[key].add(command_id)
-        for resource in event.get("defs", []):
-            key = _resource_key(resource)
-            if key in last_writer:
-                edges.add(GraphEdge(
-                    f"command:{last_writer[key]}", node_id, "WAW",
-                    _resource_label(key),
-                ))
-            for reader in readers[key] - {command_id}:
-                edges.add(GraphEdge(
-                    f"command:{reader}", node_id, "WAR", _resource_label(key),
-                ))
-            readers[key].clear()
-            last_writer[key] = command_id
+        if explicit_schedule_dependencies and timing:
+            reason_map = timing.get("dependency_reasons") or {}
+            resource_map = timing.get("dependency_resources") or {}
+            for predecessor in timing.get("dependency_predecessors", []):
+                reason_values = reason_map.get(
+                    str(predecessor), reason_map.get(predecessor, ["dependency"])
+                )
+                for reason in reason_values or ["dependency"]:
+                    if reason in ("RAW", "WAR", "WAW"):
+                        kind = reason
+                    elif reason == "CHAIN_FENCE":
+                        kind = "chain_barrier"
+                    else:
+                        kind = "dependency"
+                    predecessor_resources = resource_map.get(
+                        str(predecessor), resource_map.get(predecessor, {})
+                    )
+                    labels = predecessor_resources.get(reason, [])
+                    edges.add(GraphEdge(
+                        f"command:{predecessor}", node_id, kind,
+                        ",".join(labels) if labels else str(reason),
+                        (("provenance", "schedule"),),
+                    ))
+        else:
+            for resource in event.get("uses", []):
+                key = _resource_key(resource)
+                if key in last_writer:
+                    edges.add(GraphEdge(
+                        f"command:{last_writer[key]}", node_id, "RAW",
+                        _resource_label(key),
+                    ))
+                readers[key].add(command_id)
+            for resource in event.get("defs", []):
+                key = _resource_key(resource)
+                if key in last_writer:
+                    edges.add(GraphEdge(
+                        f"command:{last_writer[key]}", node_id, "WAW",
+                        _resource_label(key),
+                    ))
+                for reader in readers[key] - {command_id}:
+                    edges.add(GraphEdge(
+                        f"command:{reader}", node_id, "WAR", _resource_label(key),
+                    ))
+                readers[key].clear()
+                last_writer[key] = command_id
 
         tensor_reads = list(event.get("tensor_reads") or [])
         tensor_writes = list(event.get("tensor_writes") or [])
@@ -280,6 +308,10 @@ def build_cross_layer_graph(
                 (event.get("source") or {}).get("file") for event in events
             ),
             "has_timing": bool(timing_by_command),
+            "dependency_model": (
+                "schedule_explicit" if explicit_schedule_dependencies
+                else "event_physical_resources"
+            ),
             "semantic_tensor_count": len(manifest_regions),
         },
     )

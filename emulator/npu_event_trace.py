@@ -15,6 +15,7 @@ concrete DRAM addresses.
 from typing import List, Tuple
 
 from emulator.npu_command import decode_executed
+from emulator.npu_device_mini import REG_TILE_ROWS
 from emulator.workload import SourceLocation, WorkloadManifest
 
 # ── Opcode constants (copied from npu_device_mini.py) ───────────────
@@ -304,6 +305,9 @@ class EventTracer:
                 opd1=opd1,
                 full_operand=full_operand,
                 native_dim=int(inner_device.native_dim),
+                tile_rows=getattr(inner_device, "_regs", {}).get(
+                    REG_TILE_ROWS, 1
+                ),
                 chain_id=self._chain_id,
                 raw_instruction_idx=self._raw_instruction_idx,
                 expanded_idx=self._expanded_idx,

@@ -2,7 +2,7 @@
 
 ## Decision
 
-The closed loop uses two complementary timing layers. The native
+The project uses three complementary timing layers. The native
 `TimedNpuDevice` is a lock-step MMIO device for the complete custom instruction
 stream. It models decoder and FIFO pressure, scoreboarding, issue width,
 per-unit pipelines, and a shared DRAM bus while delegating retirement to the
@@ -25,6 +25,14 @@ SCALE-Sim was selected because it:
 - exposes a Python API and accepts simple GEMM topology CSV files;
 - has a permissive MIT license.
 
+The final-validation layer is now the project's own synthesizable SystemVerilog
+timing core, compiled with [Verilator](https://github.com/verilator/verilator).
+It replays the complete Jimu command trace through a finite ROB, independent
+load/store/MVU/vector/control controllers, a shared DRAM bus, a 128-bit semantic
+scoreboard, banked local SRAM ports, and chain fences.  Unlike SCALE-Sim, this
+layer observes the ordering and storage choices of every firmware command.
+See `docs/rtl-timing-simulator.md`.
+
 The project uses the stable v2 release instead of v3 because v2 has a smaller,
 well-understood configuration surface for scripted GEMM integration. Upgrading
 to v3 can be evaluated later for bank conflicts, Ramulator, sparsity, layouts,
@@ -37,7 +45,7 @@ and Accelergy integration.
 | [Timeloop/Accelergy](https://timeloop.csail.mit.edu/) | Arbitrary memory hierarchies, mappings, cycles, energy and area | Better suited to architecture/mapping exploration than replaying this firmware ISA |
 | [MAESTRO](https://research.nvidia.com/publication/2020-04_maestro-data-centric-approach-understand-reuse-performance-and-hardware-cost) | Fast analytical DNN mapping cost model | Requires translating the firmware into data-centric mapping directives and does not model its instruction trace directly |
 | [NVDLA virtual platform/RTL](https://nvdla.org/vp.html) | Register-accurate software platform and NVDLA RTL verification | Tied to the NVDLA architecture and software stack rather than this custom NPU ISA |
-| [Verilator](https://github.com/verilator/verilator) | Cycle-accurate execution of the project's own RTL | The repository currently has no complete RTL backend to compile; this remains the preferred final validation tier |
+| [Apache VTA](https://github.com/apache/tvm-vta) / [Gemmini](https://github.com/ucb-bar/gemmini) | Mature decoupled access/execute RTL and compiler stacks | Their ISAs do not match Jimu; their load/compute/store, ROB, and banked-SRAM structures instead informed the local RTL timing core |
 
 ## Integration boundary
 
@@ -87,6 +95,21 @@ systolic model for the dominant GEMMs and an auditable resource schedule for
 the custom instructions, while keeping every assumption explicit and
 versioned.
 
+The Verilator backend is invoked with `scripts/analyze_firmware.py
+--rtl-profile jimu-dse/timing/jimu-rtl-dim4.yaml`.  It emits
+`rtl-timing-schedule.json`, a generic `timing-schedule.json` alias, raw harness
+observations, optional VCD, and RTL counters.  Numerical results are deliberately
+not recomputed in RTL yet; the functional emulator remains the equivalence
+oracle.  This separates functional correctness from cycle/control fidelity.
+
+Its primary makespan ends at the last operation completion. The schedule also
+reports the later fully-idle counter and their in-order retirement tail.
+Reported net parallelism savings are the serial duration minus makespan; gross
+overlapped work and scheduler idle holes are exposed separately. Stall counters
+describe pressure on the oldest blocked entry and are deliberately not treated
+as additive performance losses. Matrix DRAM sizes follow the programmed tile
+row count instead of assuming a single native tile.
+
 ## Calibration and future work
 
 The timing profile in `jimu-dse/timing/scalesim-dim4.yaml` is protected from
@@ -101,6 +124,7 @@ Calibration should include isolated DRAM, MVU, VMM, and MMM tests followed by
 paired DMA–MVU and DMA–VMM overlap tests. These measurements tune the profile;
 they do not change the scheduling or artifact interfaces.
 
-When a complete Verilator/RTL backend is available, candidates should use the
-lock-step device plus SCALE-Sim for fast per-iteration feedback and the RTL
-cycle count as the final promotion/calibration gate.
+Candidates should use the lock-step device plus SCALE-Sim for fast per-iteration
+feedback and the RTL schedule as the final promotion/calibration gate.  The next
+fidelity step is to attach the RTL MMIO/FIFO directly to the ISS and add an
+AXI-like response model so RTL backpressure also changes host polling cycles.

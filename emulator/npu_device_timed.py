@@ -23,7 +23,7 @@ from emulator.npu_command import (
 )
 from emulator.npu_device_mini import (
     NPU_CHAIN_STATUS, NPU_INST_FIFO, NPU_RESET, NPU_STATUS,
-    STATUS_BUSY, STATUS_DONE,
+    REG_TILE_ROWS, STATUS_BUSY, STATUS_DONE,
 )
 from emulator.workload import SourceLocation, WorkloadManifest
 
@@ -367,7 +367,8 @@ class TimedNpuDevice:
         )
         command = decode_raw(
             raw, command_id=self._sequence, chain_id=self._chain_id,
-            native_dim=int(self._inner.native_dim), source=source,
+            native_dim=int(self._inner.native_dim),
+            tile_rows=self._shadow_regs.get(REG_TILE_ROWS, 1), source=source,
             cpu_cycle=self._cpu_context.get("cycle"), manifest=self.manifest,
         )
         if command.inc_parent_opcode is not None:
@@ -383,7 +384,9 @@ class TimedNpuDevice:
                 command_id=self._sequence, raw=raw, opcode=base_opcode,
                 opd0=command.opd0, opd1=0,
                 full_operand=full_operand,
-                native_dim=int(self._inner.native_dim), chain_id=self._chain_id,
+                native_dim=int(self._inner.native_dim),
+                tile_rows=self._shadow_regs.get(REG_TILE_ROWS, 1),
+                chain_id=self._chain_id,
                 raw_instruction_idx=self._sequence, source=source,
                 cpu_cycle=self._cpu_context.get("cycle"), manifest=self.manifest,
             )

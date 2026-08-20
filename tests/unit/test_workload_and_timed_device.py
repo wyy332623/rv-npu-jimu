@@ -4,7 +4,7 @@ import numpy as np
 import pytest
 
 from emulator.npu_command import (
-    OP_INST_ISSUE, OP_S_WR, OP_V_RD_DRAM, OP_V_RD_DRAM_INC,
+    OP_INST_ISSUE, OP_M_RD_DRAM, OP_S_WR, OP_V_RD_DRAM, OP_V_RD_DRAM_INC,
 )
 from emulator.npu_device_mini import NPU_CHAIN_STATUS, NPU_INST_FIFO, NPU_STATUS
 from emulator.npu_device_timed import TimedDeviceProfile, TimedNpuDevice
@@ -174,6 +174,27 @@ def test_timed_device_models_increment_memory_span_and_transfer_count():
         "end_address": 20,
     }
     assert inc["duration_cycles"] >= 6
+
+
+def test_timed_device_matrix_transfer_uses_programmed_tile_rows():
+    inner = FakeFunctionalDevice()
+    timed = TimedNpuDevice(inner, TimedDeviceProfile.from_dict({
+        "decoder_latency": 0,
+        "memory": {"bytes_per_cycle": 8, "setup_cycles": 0,
+                   "element_bytes": 2},
+    }))
+    timed.store(
+        NPU_INST_FIFO,
+        _raw(OP_S_WR, (1 << 16) | 2).to_bytes(4, "little"),
+    )
+    timed.store(
+        NPU_INST_FIFO, _raw(OP_M_RD_DRAM, 0x100).to_bytes(4, "little")
+    )
+
+    matrix_read = timed.timeline[-1]
+    assert matrix_read["memory"]["elements"] == (2 * inner.native_dim) ** 2
+    assert matrix_read["memory"]["end_address"] == 0x140
+    assert matrix_read["duration_cycles"] >= 16
 
 
 def test_minirv64_srli_uses_all_64_bits_and_ticks_device():

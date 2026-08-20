@@ -1,6 +1,7 @@
 from emulator.npu_event_trace import (
     EventTracer,
     OP_INST_ISSUE,
+    OP_M_RD_DRAM,
     OP_V_RD_DRAM,
     OP_V_RD_DRAM_INC,
 )
@@ -9,6 +10,9 @@ from emulator.workload import TensorRegion, WorkloadManifest
 
 class FakeDevice:
     native_dim = 4
+
+    def __init__(self):
+        self._regs = {}
 
     def _push_instruction(self, inst):
         opcode = (inst >> 24) & 0xFF
@@ -69,4 +73,18 @@ def test_event_tracer_attaches_generic_tensor_semantics():
     assert tracer.events[0]["tensor_reads"] == ["input"]
     assert tracer.events[0]["tensor_writes"] == []
     assert tracer.events[0]["memory"]["tensors"] == ["input"]
+    tracer.unpatch()
+
+
+def test_event_tracer_matrix_span_uses_current_tile_rows():
+    device = FakeDevice()
+    device._regs[1] = 3
+    tracer = EventTracer(device)
+
+    device._push_instruction(raw(OP_M_RD_DRAM, 0x100))
+
+    event = tracer.events[0]
+    assert event["tile_rows"] == 3
+    assert event["memory"]["elements"] == (3 * device.native_dim) ** 2
+    assert event["memory"]["end_address"] == 0x190
     tracer.unpatch()

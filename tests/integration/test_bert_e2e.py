@@ -618,13 +618,18 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
     # ── DRAM traffic report ────────────────────────────────────
     ds = npu.get_dram_stats()
     total_elements = ds['vec_rd_elements'] + ds['vec_wr_elements'] + ds['mat_rd_elements'] + ds['mat_wr_elements']
-    total_bytes = total_elements * 4
-    print(f"\n  DRAM traffic (float32 elements):")
-    print(f"    V_RD_DRAM: {ds['vec_rd_ops']} ops × {8} el = {ds['vec_rd_elements']} el")
-    print(f"    V_WR_DRAM: {ds['vec_wr_ops']} ops × {8} el = {ds['vec_wr_elements']} el")
-    print(f"    M_RD_DRAM: {ds['mat_rd_ops']} ops × 64 el = {ds['mat_rd_elements']} el")
-    print(f"    M_WR_DRAM: {ds['mat_wr_ops']} ops × 64 el = {ds['mat_wr_elements']} el")
-    print(f"    Total: {total_elements} elements ({total_bytes} bytes)")
+    functional_container_bytes = total_elements * 4
+    fp16_payload_bytes = total_elements * 2
+    print("\n  DRAM traffic:")
+    print(f"    V_RD_DRAM: {ds['vec_rd_ops']} ops, {ds['vec_rd_elements']} elements")
+    print(f"    V_WR_DRAM: {ds['vec_wr_ops']} ops, {ds['vec_wr_elements']} elements")
+    print(f"    M_RD_DRAM: {ds['mat_rd_ops']} ops, {ds['mat_rd_elements']} elements")
+    print(f"    M_WR_DRAM: {ds['mat_wr_ops']} ops, {ds['mat_wr_elements']} elements")
+    print(
+        f"    Total: {total_elements} elements "
+        f"(FP16 RTL payload {fp16_payload_bytes} bytes; "
+        f"float32 emulator storage {functional_container_bytes} bytes)"
+    )
 
     # ── Opcode coverage check ─────────────────────────────────
     ops_hit = set()

@@ -1,0 +1,158 @@
+schema_version: 1
+name: rtl-dram-exploration
+description: Explore successive DRAM data-placement optimizations at dim=2 using Verilator RTL makespan scoring.
+target:
+  firmware: firmware/bert/bert_layer.c
+  baseline: jimu-dse/baseline/bert_layer.c
+  allowed_files: [firmware/bert/bert_layer.c]
+  hardware: {dim: 2, hidden: 4, num_head: 2}
+  sequence_lengths: [2, 6]
+agent:
+  backend: opencode
+  model: opencode/big-pickle
+  timeout_seconds: 1800
+  work_budget:
+    max_primary_hypotheses: 1
+    analysis_deadline_seconds: 600
+    edit_deadline_seconds: 900
+    return_deadline_seconds: 1500
+  context_files:
+    - firmware/bert/bert_layer.c
+    - jimu-dse/goals/dram-optimization/goal.yaml
+    - jimu-dse/timing/jimu-rtl-dim2.yaml
+    - jimu-dse/workloads/bert-dim2-seq6.yaml
+prompt:
+  goal: Reduce end-to-end RTL makespan by eliminating or relocating redundant DRAM traffic while preserving numerical correctness.
+  constraints:
+    - Only modify the configured firmware target.
+    - Preserve numerical correctness for every configured BERT case, public functions, and multi-tile behavior.
+    - Optimize and promote only on rtl_predicted_npu_cycles; DRAM bytes, access counts, instruction counts, and auxiliary timing values are diagnostic evidence only.
+    - At each iteration, inspect the current best firmware and RTL critical path, then select one legal DRAM-related opportunity that has not already been implemented.
+    - If K/V caching is already present, continue with the next causal DRAM opportunity instead of repeating or merely re-auditing K/V.
+    - Implement at most one primary hypothesis per iteration so the measured RTL makespan change remains attributable.
+    - Account for tensor lifetime, VRF capacity, address-range disjointness, bank conflicts, semantic dependencies, and lost memory-compute overlap before editing.
+    - A reduction in DRAM traffic is not sufficient for promotion when RTL makespan does not improve.
+    - Do not modify the RTL, timing profile, workload manifest, simulator adapter, emulator, tests, artifacts, metrics, or build system.
+    - This loop is non-interactive; do not ask for confirmation. If no new legal DRAM hypothesis remains, return without unrelated changes.
+  self_verify: Run at most one targeted quick check, then return control; the closed-loop controller owns complete gates and official RTL scoring.
+  template: |
+    You are optimizing DRAM-related data placement in {target_file} against a
+    synthesizable Verilator RTL timing core.
+    Goal: {goal_name} — {goal_description}
+    Iteration: {iteration}
+    Hardware: {hardware}
+
+    Current best metrics (RTL score plus DRAM diagnostics):
+    {metrics}
+
+    The RTL has a finite ROB, independent load/store/MVU/vector/control
+    controllers, a shared DRAM bus, a 128-bit semantic scoreboard, banked SRAM
+    ports, and chain fences. DRAM traffic can overlap independent computation,
+    so the only promotion score is end-to-end RTL makespan.
+
+    Scored RTL data-flow evidence:
+    {graph_context}
+
+    DRAM cluster observations:
+    {clusters}
+
+    Treat the current firmware as the accumulated best candidate. Identify one
+    DRAM save/load, repeated constant load, or intermediate spill that is both
+    legal to eliminate and causally relevant to completion. Do not repeat an
+    optimization already present. If K/V already resides in a correct,
+    disjoint VRF layout, move on to the next opportunity such as Q, probability
+    scratch, unit vectors, residual/self-output intermediates, or LayerNorm
+    scratch. Implement only the single strongest legal hypothesis this round.
+
+    Constraints:
+    {constraints}
+
+    Apply these skills in order:
+    {skills}
+
+    Acceptance gates:
+    {gate_commands}
+    Self verification: {self_verify}
+skills:
+  - name: dag-analyze
+    path: jimu-dse/docs/skills/isa/dag-analyze.md
+  - name: rtl-dataflow
+    path: jimu-dse/docs/skills/isa/rtl-dataflow.md
+  - name: vrf-cache
+    path: jimu-dse/docs/skills/isa/vrf-cache.md
+  - name: dataflow-optimize
+    path: jimu-dse/docs/skills/isa/dataflow-optimize.md
+  - name: self-verify
+    path: jimu-dse/docs/skills/isa/self-verify.md
+probe:
+  workload_manifest: jimu-dse/workloads/bert-dim2-seq6.yaml
+  timed_device:
+    profile: jimu-dse/timing/npu-timed-v1.yaml
+  metrics:
+    - rtl_predicted_npu_cycles
+    - rtl_completion_makespan_cycles
+    - rtl_idle_cycles
+    - rtl_retirement_tail_cycles
+    - serial_command_cycles
+    - overlap_saved_cycles
+    - net_parallelism_savings_cycles
+    - gross_overlap_cycles
+    - scheduler_idle_hole_cycles
+    - memory_compute_overlap_cycles
+    - memory_compute_overlap_ratio
+    - max_concurrent_ops
+    - dram_bus_utilization
+    - load_utilization
+    - store_utilization
+    - mvu_utilization
+    - vector_utilization
+    - control_utilization
+    - rtl_counter_dependency_stall_cycles
+    - rtl_counter_dram_stall_cycles
+    - rtl_counter_bank_stall_cycles
+    - rtl_counter_barrier_stall_cycles
+    - rtl_counter_frontend_full_stall_cycles
+    - total_bytes
+    - dram_elements
+    - functional_container_bytes
+    - rtl_payload_bytes
+    - instr_count
+    - mv_mul_count
+    - mat_rd_ops
+    - memory_access_count
+    - memory_read_count
+    - memory_write_count
+    - timed_wall_cycles
+    - timed_fifo_full_stall_cycles
+    - timed_scoreboard_stall_cycles
+    - timed_dram_stall_cycles
+    - timed_frontend_overflow_count
+  scoring_sequence_length: 6
+  cycle_model:
+    profile: jimu-dse/timing/jimu-rtl-dim2.yaml
+  cycle_limit: 300000
+  dag: {enabled: true}
+acceptance:
+  gates:
+    - {name: allowed-files, type: allowed_files}
+    - {name: firmware-build, type: build}
+    - {name: probe-complete, type: probe}
+    - name: numerical-correctness
+      type: command
+      command: python3 -m pytest tests/integration/test_bert_e2e.py -k "dim{dim} and h{hidden}" --no-header -q
+      timeout_seconds: 600
+      success_codes: [0]
+  score:
+    - {metric: rtl_predicted_npu_cycles, direction: minimize, weight: 1.0}
+loop:
+  mode: goal_driven
+  max_iterations: 10
+  min_score_delta: 0.0
+  max_no_improvement: 3
+  evaluate_timeout_candidate: true
+artifacts:
+  save_candidates: true
+  save_diffs: true
+  save_prompts: true
+  save_probes: true
+  save_graphs: true

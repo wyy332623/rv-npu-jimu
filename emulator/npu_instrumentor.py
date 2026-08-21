@@ -104,7 +104,7 @@ class NpuInstrumentor:
         self._inst_count += 1
         self._original_push(inst)
 
-    def _patched_v_wr_dram(self, opcode, opd0, opd1, full_operand=0):
+    def _patched_v_wr_dram(self, full_operand, pipeline=None):
         """Intercept V_WR_DRAM to detect operator boundaries.
 
         When the firmware writes to a boundary address, capture a
@@ -112,7 +112,7 @@ class NpuInstrumentor:
         the result for comparison against golden reference.
         """
         # Delegate to original first (write completes)
-        self._original_v_wr_dram(opcode, opd0, opd1, full_operand)
+        self._original_v_wr_dram(full_operand, pipeline=pipeline)
 
         # Now check if the address is the last tile row of a boundary
         addr = full_operand

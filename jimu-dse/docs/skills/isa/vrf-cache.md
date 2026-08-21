@@ -10,7 +10,7 @@ license: MIT
 
 ## Problem
 
-The firmware computes K=V=Wx+b for each position, saves to DRAM via `save_row_tiles()`, then the attention code reloads from DRAM via `V_RD_DRAM`. This roundtrip is unnecessary when the target VRF has capacity.
+The firmware computes `K = Wk*x + bk` and `V = Wv*x + bv` for each position, saves both tensors to DRAM via `save_row_tiles()`, then the attention code reloads them via `V_RD_DRAM`. This roundtrip is unnecessary when the target VRF has capacity.
 
 ## VRF Capacity
 
@@ -30,6 +30,20 @@ For dim=2, hidden=4, seq_len=6:
 - All 6 positions' K+V: 48 elements total
 - MFU_INITIAL_VRF capacity: 4096 elements → **0.6% used**
 
+K and V are distinct live tensors and must occupy disjoint cache ranges. Define
+the layout once and use the same bases in both producers and consumers:
+
+```c
+uint32_t tensor_span = seq_len * num_tiles * NATIVE_DIM;
+uint32_t k_cache_base = 0;
+uint32_t v_cache_base = k_cache_base + tensor_span;
+uint32_t kv_cache_end = v_cache_base + tensor_span;
+```
+
+Apply this optimization only when `kv_cache_end` does not exceed the selected
+VRF capacity. For dim=2, hidden=4, seq_len=6, K occupies `[0, 24)` and V
+occupies `[24, 48)` in `MFU_INITIAL_VRF`.
+
 ## Transformation
 
 ### Step 1: After computing K/V in `mvm_tiled_q()`
@@ -46,12 +60,15 @@ save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
                MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
 
 // Use:
-uint32_t cache_offset = pos * num_tiles * NATIVE_DIM;
+uint32_t tensor_offset = pos * num_tiles * NATIVE_DIM;
 SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
-SEND_SI(OP_V_WR, 6, cache_offset);  // MFU_INITIAL_VRF[offset]
+SEND_SI(OP_V_WR, 6, k_cache_base + tensor_offset);
 SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_1, 0);
-SEND_SI(OP_V_WR, 6, cache_offset + NATIVE_DIM);
+SEND_SI(OP_V_WR, 6, k_cache_base + tensor_offset + NATIVE_DIM);
 ```
+
+The V producer uses the identical position/tile formula with `v_cache_base`,
+never `k_cache_base`.
 
 ### Step 2: Load K/V from VRF during attention
 
@@ -62,20 +79,30 @@ SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
 
 Replace with VRF reads:
 ```c
-uint32_t cache_offset = p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
-SEND_SI(OP_V_RD, 6, cache_offset);  // MFU_INITIAL_VRF[offset]
+uint32_t tensor_offset = p * num_tiles * NATIVE_DIM + tr * NATIVE_DIM;
+SEND_SI(OP_V_RD, 6, k_cache_base + tensor_offset);
 ```
 
-Similarly for V (used in V.T build and V.T re-transpose).
+V reads (used in V.T build and V.T re-transpose) must instead use:
+
+```c
+SEND_SI(OP_V_RD, 6, v_cache_base + tensor_offset);
+```
 
 ### Step 3: Handle K/V across tile rows
 
 With num_tiles=2, each position has 2 tile rows (tr=0, tr=1). Both must be cached:
 ```c
-uint32_t cache_offset = pos * num_tiles * NATIVE_DIM;
-// tr=0 stored at cache_offset
-// tr=1 stored at cache_offset + NATIVE_DIM
+uint32_t tensor_offset = pos * num_tiles * NATIVE_DIM;
+// K tr=0: k_cache_base + tensor_offset
+// K tr=1: k_cache_base + tensor_offset + NATIVE_DIM
+// V tr=0: v_cache_base + tensor_offset
+// V tr=1: v_cache_base + tensor_offset + NATIVE_DIM
 ```
+
+Do not reuse the K offsets for V. Doing so overwrites K before attention and
+can escape an output-only test when a particular stimulus is insensitive to
+the substitution.
 
 ## What NOT to change
 
@@ -86,12 +113,15 @@ uint32_t cache_offset = pos * num_tiles * NATIVE_DIM;
 
 ## Verification
 
-Run the instrumented test to check all operators produce correct output:
+Run the end-to-end test. It checks every output position, validates K/V values
+at their actual storage boundary, and rejects overlapping MFU VRF ranges:
 ```bash
-python3 -m pytest tests/integration/test_bert_e2e.py --instrument -k seq6 -s --no-header 2>&1 | grep "max_diff"
+python3 -m pytest tests/integration/test_bert_e2e.py -k seq6 -s --no-header
 ```
 
-All values must be < 0.05. Also verify the DRAM reduction:
+All values must be < 0.05 and the K/V storage check must pass. Use
+`--instrument` when operator-boundary diagnostics are also needed. Verify the
+DRAM reduction separately:
 ```bash
 python3 -m pytest tests/integration/test_bert_e2e.py -k seq6 -s 2>&1 | grep "DRAM"
 ```

@@ -14,10 +14,11 @@ Validation chain (all rounds operate in FP16):
   HDL rounds are skiped if Amaranth is not installed.
   Run `pip install amaranth` for full 4-round validation.
 
-Only the **final output** is checked for numerical correctness.
-Intermediates (Q, K, V, residual, LN) are optimization-free — the
-firmware may store them in VRF cache, on-chip SRAM, or DRAM as
-needed for the best performance/area tradeoff.
+Every sequence position's final output is checked for numerical correctness.
+K/V projections are also checked at their actual storage boundary: either the
+baseline DRAM layout or the optimized MFU VRF cache.  The cache check requires
+K and V to use disjoint ranges, so a value-insensitive final output cannot hide
+an address-aliasing bug.
 """
 
 import numpy as np
@@ -25,7 +26,7 @@ import pytest
 import subprocess
 from pathlib import Path
 
-from emulator.npu_device_mini import NpuDeviceMini, MEM_DRAM
+from emulator.npu_device_mini import NpuDeviceMini, MEM_DRAM, MEM_MFU_INITIAL_VRF
 from emulator.trace_recorder import TraceRecorder
 from emulator.npu_instrumentor import NpuInstrumentor, OpBoundary
 
@@ -85,7 +86,8 @@ OP_NAMES = {
 # Shared helpers
 # ═══════════════════════════════════════════════════════════════════════
 
-def _generate_golden(hidden_size, num_head, head_size, seq_len=1, native_dim=None):
+def _generate_golden(hidden_size, num_head, head_size, seq_len=1,
+                     native_dim=None, seed=_SEED):
     """FP16 golden reference matching emulator + firmware precision exactly.
 
     The forward pass in gen_golden_bert.py now faithfully reproduces the
@@ -100,6 +102,7 @@ def _generate_golden(hidden_size, num_head, head_size, seq_len=1, native_dim=Non
       head_size: elements per head
       seq_len: sequence length
       native_dim: NPU native dimension (firmware tile size). Defaults to head_size * 2.
+      seed: deterministic input/parameter seed.
 
     Returns:
       golden: full BERT layer intermediates dict (emulator-matching)
@@ -113,7 +116,7 @@ def _generate_golden(hidden_size, num_head, head_size, seq_len=1, native_dim=Non
     golden, params = bert_encoder_layer(
         add_mask=False, num_head=num_head, head_size=head_size,
         hidden_size=hidden_size, seq_len=seq_len,
-        native_dim=native_dim, precision='emulator_float32', seed=_SEED)
+        native_dim=native_dim, precision='emulator_float32', seed=seed)
 
     # The golden 'out' tensor is now computed with emulator-matching
     # precision, so sim_out is simply golden['out'].
@@ -389,6 +392,124 @@ def _extract_output_from_emulator(npu, dim, hidden_size, pos=0):
     return _extract_tiled_from_dram(npu._vrf[MEM_DRAM], base, dim, hidden_size)
 
 
+class _KvStorageCapture:
+    """Capture K/V candidate writes without requiring firmware hooks.
+
+    Baseline firmware writes K/V to DRAM.  The VRF-cache optimization writes
+    them to MFU_INITIAL_VRF, whose contents may later be reused, so values and
+    destinations must be captured at write time.
+    """
+
+    def __init__(self, npu):
+        self._npu = npu
+        self._original_v_wr = npu._v_wr
+        self._original_v_wr_dram = npu._v_wr_dram
+        self.mfu_writes = []
+        self.dram_writes = []
+        npu._v_wr = self._capture_v_wr
+        npu._v_wr_dram = self._capture_v_wr_dram
+
+    def _capture_v_wr(self, opd0, opd1, pipeline=None):
+        self._original_v_wr(opd0, opd1, pipeline=pipeline)
+        if opd0 == MEM_MFU_INITIAL_VRF and pipeline is not None:
+            end = opd1 + self._npu.native_dim
+            value = self._npu._vrf[opd0][opd1:end].copy()
+            self.mfu_writes.append((opd1, value))
+
+    def _capture_v_wr_dram(self, full_operand, pipeline=None):
+        self._original_v_wr_dram(full_operand, pipeline=pipeline)
+        if pipeline is not None:
+            self.dram_writes.append(full_operand)
+
+    def unpatch(self):
+        self._npu._v_wr = self._original_v_wr
+        self._npu._v_wr_dram = self._original_v_wr_dram
+
+
+def _check_kv_storage(npu, capture, golden, dim, hidden_size, seq_len):
+    """Validate K/V values and enforce disjoint cache address ranges."""
+    num_tiles = hidden_size // dim
+    writes_per_tensor = seq_len * num_tiles
+    k_dram_base = 0x300
+    v_dram_base = 0x400
+    k_dram_addrs = {
+        k_dram_base + pos * num_tiles * 8 + tr * 8
+        for pos in range(seq_len) for tr in range(num_tiles)
+    }
+    v_dram_addrs = {
+        v_dram_base + pos * num_tiles * 8 + tr * 8
+        for pos in range(seq_len) for tr in range(num_tiles)
+    }
+    observed_dram_addrs = set(capture.dram_writes)
+    has_k_dram = k_dram_addrs.issubset(observed_dram_addrs)
+    has_v_dram = v_dram_addrs.issubset(observed_dram_addrs)
+
+    if has_k_dram and has_v_dram:
+        print("  K/V storage: baseline DRAM layout")
+        for pos in range(seq_len):
+            k_actual = _extract_tiled_from_dram(
+                npu._vrf[MEM_DRAM], k_dram_base + pos * num_tiles * 8,
+                dim, hidden_size)
+            v_actual = _extract_tiled_from_dram(
+                npu._vrf[MEM_DRAM], v_dram_base + pos * num_tiles * 8,
+                dim, hidden_size)
+            _check_tensor("Round 1 K storage", k_actual, golden['K'][pos],
+                          0.05, f"K[pos={pos}]")
+            _check_tensor("Round 1 V storage", v_actual, golden['V'][pos],
+                          0.05, f"V[pos={pos}]")
+        return
+
+    assert not (has_k_dram or has_v_dram), (
+        "K/V storage is only partially present in DRAM; both tensors must use "
+        "the baseline layout or both must be redirected to a checked cache")
+
+    assert len(capture.mfu_writes) >= 2 * writes_per_tensor, (
+        "K/V are absent from DRAM, but the MFU VRF capture does not contain "
+        f"the required {2 * writes_per_tensor} tile writes")
+
+    k_writes = capture.mfu_writes[:writes_per_tensor]
+    v_writes = capture.mfu_writes[writes_per_tensor:2 * writes_per_tensor]
+    k_base = k_writes[0][0]
+    v_base = v_writes[0][0]
+    tensor_span = writes_per_tensor * dim
+    expected_offsets = [
+        pos * num_tiles * dim + tr * dim
+        for pos in range(seq_len) for tr in range(num_tiles)
+    ]
+    expected_k_addrs = [k_base + offset for offset in expected_offsets]
+    expected_v_addrs = [v_base + offset for offset in expected_offsets]
+    actual_k_addrs = [addr for addr, _ in k_writes]
+    actual_v_addrs = [addr for addr, _ in v_writes]
+
+    assert actual_k_addrs == expected_k_addrs, (
+        f"K cache layout is not contiguous: {actual_k_addrs}")
+    assert actual_v_addrs == expected_v_addrs, (
+        f"V cache layout is not contiguous: {actual_v_addrs}")
+
+    k_range = set(range(k_base, k_base + tensor_span))
+    v_range = set(range(v_base, v_base + tensor_span))
+    overlap = sorted(k_range & v_range)
+    assert not overlap, (
+        "K/V cache ranges overlap in MFU_INITIAL_VRF: "
+        f"K=[{k_base}, {k_base + tensor_span}), "
+        f"V=[{v_base}, {v_base + tensor_span}), overlap starts at {overlap[0]}")
+
+    vrf_capacity = len(npu._vrf[MEM_MFU_INITIAL_VRF])
+    assert max(k_base + tensor_span, v_base + tensor_span) <= vrf_capacity, (
+        "K/V cache layout exceeds MFU_INITIAL_VRF capacity")
+
+    for index, ((_, k_actual), (_, v_actual)) in enumerate(zip(k_writes, v_writes)):
+        pos, tr = divmod(index, num_tiles)
+        start = tr * dim
+        stop = start + dim
+        _check_tensor("Round 1 K cache", k_actual, golden['K'][pos][start:stop],
+                      0.05, f"K[pos={pos},tile={tr}]")
+        _check_tensor("Round 1 V cache", v_actual, golden['V'][pos][start:stop],
+                      0.05, f"V[pos={pos},tile={tr}]")
+    print(f"  K/V storage: disjoint MFU VRF ranges K=[{k_base}, {k_base + tensor_span}), "
+          f"V=[{v_base}, {v_base + tensor_span})")
+
+
 def _check_tensor(label, actual, ref, atol, name=""):
     """Compare two tensors, print diagnostics, return max_diff.
     Raises AssertionError if max_diff exceeds atol."""
@@ -413,8 +534,8 @@ def _check_tensor(label, actual, ref, atol, name=""):
 
 def _instrument_boundaries(dim, hidden_size, seq_len, proj_base, stride, num_tiles):
     """Build OpBoundary list matching current firmware DRAM layout.
-    Only final output is checked — intermediates (Q, K, V) are
-    optimization-free and may be stored in VRF cache, not DRAM."""
+    Output boundaries are diagnostic; K/V storage is checked separately so
+    either baseline DRAM or optimized VRF-cache firmware is supported."""
     nt = num_tiles
     boundaries = [
         OpBoundary('save_res', 0x700, nt, stride=8),
@@ -439,13 +560,13 @@ def _run_instrumented_diagnostics(npu, instr, dim, hidden_size, seq_len, golden,
 
     from tests.gen_golden_bert import fp16_round as _fr
 
-    # Only check final output — intermediates are optimization-free
+    # Show the final position here; the mandatory gate checks every position.
     ref_out = golden['out'][last_pos].flatten()[:hidden_size]
     from tests.integration.test_bert_e2e import _extract_output_from_emulator
     emu_out = _extract_output_from_emulator(npu, dim, hidden_size, pos=last_pos)
     d = float(np.max(np.abs(emu_out - ref_out)))
     st = 'OK' if d < 0.05 else 'FAIL'
-    print(f'  [{st}] OUT  max_diff={d:.6f}  {emu_out[:4].round(4)}  (only final output is validated)')
+    print(f'  [{st}] OUT  max_diff={d:.6f}  {emu_out[:4].round(4)}  (diagnostic final position)')
     print(f"  {'='*60}")
 
 
@@ -473,25 +594,29 @@ def _firmware_is_single_tile_only(dim, hidden_size) -> bool:
     return False
 
 
-@pytest.mark.parametrize("dim,lanes,num_head,hidden_size,seq_len,vrf_depth", [
-    (2, 2, 2, 4, 2, 64),
-    (2, 2, 2, 4, 6, 64),
-    (4, 4, 2, 8, 2, 64),
-    (4, 4, 2, 8, 6, 64),
-    (4, 4, 2, 4, 2, 64),   # dim4-h4: single-tile, heads_per_tile=2
-    (4, 4, 2, 4, 6, 64),   # dim4-h4-seq6
+@pytest.mark.parametrize("dim,lanes,num_head,hidden_size,seq_len,vrf_depth,seed", [
+    (2, 2, 2, 4, 2, 64, 42),
+    (2, 2, 2, 4, 6, 64, 42),
+    (2, 2, 2, 4, 6, 64, 7),  # second deterministic E2E stimulus
+    (4, 4, 2, 8, 2, 64, 42),
+    (4, 4, 2, 8, 6, 64, 42),
+    (4, 4, 2, 4, 2, 64, 42),   # dim4-h4: single-tile, heads_per_tile=2
+    (4, 4, 2, 4, 6, 64, 42),   # dim4-h4-seq6
 ], ids=[
     "dim2-lanes2-head2-h4-seq2",
     "dim2-lanes2-head2-h4-seq6",
+    "dim2-lanes2-head2-h4-seq6-seed7",
     "dim4-lanes4-head2-h8-seq2",
     "dim4-lanes4-head2-h8-seq6",
     "dim4-lanes4-head2-h4-seq2",
     "dim4-lanes4-head2-h4-seq6",
 ])
-def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_depth, request):
+def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
+                             vrf_depth, seed, request):
     """
     BERT encoder layer, multi-tile: hidden_size > NATIVE_DIM.
-    Validates both Q projection and final output across all 4 rounds.
+    Validates K/V storage and every final-output position in the emulator.
+    Optional HDL rounds replay and compare the final position.
     Optional HDL rounds (R2, R3) run only if Amaranth is installed.
     """
     if not HAS_ISS:
@@ -507,7 +632,8 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
     last_pos = seq_len - 1
 
     print(f"\n  Config: dim={dim}, lanes={lanes}, num_head={num_head}, "
-          f"hidden_size={hidden_size}, head_size={head_size}, seq_len={seq_len}")
+          f"hidden_size={hidden_size}, head_size={head_size}, "
+          f"seq_len={seq_len}, seed={seed}")
     print(f"  num_tiles = {num_tiles} (each tile = {dim}×{dim})")
     print(f"  Mode: {num_tiles}×{num_tiles}-tile (hidden_size > dim)")
 
@@ -515,12 +641,11 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
     print("\n  Round 0: FP16 golden reference...")
     golden, params, sim_out_ref_arr, ln_offsets = _generate_golden(
         hidden_size=hidden_size, num_head=num_head, head_size=head_size,
-        seq_len=seq_len, native_dim=dim)
+        seq_len=seq_len, native_dim=dim, seed=seed)
 
-    sim_out_ref = sim_out_ref_arr
-    if sim_out_ref.ndim > 1:
-        sim_out_ref = sim_out_ref_arr[last_pos].flatten()[:hidden_size]
-    print(f"  Golden out[:4]:   {sim_out_ref[:4].round(4)}")
+    sim_out_refs = np.asarray(sim_out_ref_arr).reshape(seq_len, -1)[:, :hidden_size]
+    sim_out_ref = sim_out_refs[last_pos]
+    print(f"  Golden out[last][:4]: {sim_out_ref[:4].round(4)}")
 
     # ── Round 1: Firmware on emulator ─────────────────────────
     print("\n  Round 1: Firmware on emulator (multi-tile, dim=8)...")
@@ -586,6 +711,11 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
         e_j[j] = 1.0
         npu._vrf[MEM_DRAM][UNIT_VEC_BASE + j * dim: UNIT_VEC_BASE + j * dim + dim] = e_j
 
+    # Capture storage writes before optional diagnostics add their own wrapper.
+    # This lets the mandatory gate validate either the baseline DRAM layout or
+    # an optimized K/V cache whose final VRF contents may later be overwritten.
+    kv_capture = _KvStorageCapture(npu)
+
     # ── Optional instrumentor: wrap NPU with op-by-op boundary capture ──
     want_instr = request.config.getoption("--instrument", default=False)
     instr = None
@@ -605,15 +735,23 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
     trace = rec.inst_trace
     print(f"  Instructions executed: {len(trace)}")
 
-    emu_out = _extract_output_from_emulator(npu, dim, hidden_size, pos=last_pos)
-    print(f"  Emulator out[:4]:  {emu_out[:4].round(4)}")
+    emu_outputs = []
+    for pos in range(seq_len):
+        pos_out = _extract_output_from_emulator(
+            npu, dim, hidden_size, pos=pos)
+        emu_outputs.append(pos_out)
+        _check_tensor("Round 1", pos_out, sim_out_refs[pos], 0.05,
+                      f"out[pos={pos}]")
+    emu_out = emu_outputs[last_pos]
+    print(f"  Emulator out[last][:4]: {emu_out[:4].round(4)}")
 
-    _check_tensor("Round 1", emu_out, sim_out_ref, 0.05, "out")
+    _check_kv_storage(npu, kv_capture, golden, dim, hidden_size, seq_len)
 
     # ── Optional instrumentor diagnostics ──────────────────────
     if instr is not None:
         _run_instrumented_diagnostics(npu, instr, dim, hidden_size, seq_len, golden, params)
         instr.unpatch()
+    kv_capture.unpatch()
 
     # ── DRAM traffic report ────────────────────────────────────
     ds = npu.get_dram_stats()

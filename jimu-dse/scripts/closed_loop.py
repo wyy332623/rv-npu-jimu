@@ -49,6 +49,7 @@ SUPPORTED_METRICS = {
     "rtl_predicted_npu_cycles", "serial_command_cycles",
     "memory_compute_overlap_ratio", "load_utilization", "store_utilization",
     "vector_utilization", "control_utilization",
+    "logical_dram_payload_bytes", "modeled_dram_transaction_bytes",
     "rtl_counter_cycles", "rtl_counter_active_cycles",
     "rtl_counter_memory_compute_overlap_cycles",
     "rtl_counter_frontend_full_stall_cycles",
@@ -643,11 +644,84 @@ def config_fingerprint(config: dict[str, Any]) -> str:
     return hashlib.sha256(canonical.encode()).hexdigest()
 
 
+def timing_profile_fingerprints(config: dict[str, Any]) -> dict[str, dict[str, str]]:
+    """Fingerprint timing inputs whose contents are not covered by config paths."""
+    result: dict[str, dict[str, str]] = {}
+    for label, section in (
+        ("cycle_model", config.get("probe", {}).get("cycle_model", {})),
+        ("timed_device", config.get("probe", {}).get("timed_device", {})),
+    ):
+        profile = section.get("profile") if isinstance(section, dict) else None
+        if not profile:
+            continue
+        path = _repo_path(profile, f"probe.{label}.profile")
+        result[label] = {
+            "path": str(profile),
+            "sha256": hashlib.sha256(path.read_bytes()).hexdigest(),
+        }
+    return result
+
+
+_FEEDBACK_METRICS = (
+    "rtl_predicted_npu_cycles", "serial_command_cycles",
+    "net_parallelism_savings_cycles", "gross_overlap_cycles",
+    "scheduler_idle_hole_cycles", "memory_compute_overlap_cycles",
+    "logical_dram_payload_bytes", "modeled_dram_transaction_bytes",
+    "dram_bus_utilization", "load_utilization", "store_utilization",
+    "vector_utilization", "mvu_utilization",
+    "rtl_counter_frontend_full_stall_cycles",
+    "rtl_counter_dependency_stall_cycles", "rtl_counter_dram_stall_cycles",
+    "rtl_counter_bank_stall_cycles",
+)
+
+
+def _candidate_feedback(
+    reference: dict[str, Any], candidate: dict[str, Any],
+) -> dict[str, dict[str, Any]]:
+    """Return compact candidate deltas for the next optimization iteration."""
+    feedback: dict[str, dict[str, Any]] = {}
+    for name in _FEEDBACK_METRICS:
+        if name not in reference or name not in candidate:
+            continue
+        before, after = reference[name], candidate[name]
+        if not isinstance(before, (int, float)) or not isinstance(after, (int, float)):
+            continue
+        feedback[name] = {
+            "reference": before,
+            "candidate": after,
+            "delta": after - before,
+        }
+    return feedback
+
+
+def _attempt_history_context(attempts: list[dict[str, Any]] | None) -> str:
+    if not attempts:
+        return ""
+    compact = []
+    for item in attempts[-3:]:
+        compact.append({
+            "iteration": item.get("iteration"),
+            "status": item.get("status"),
+            "promoted": item.get("promoted", False),
+            "candidate_delta_vs_previous_best": item.get(
+                "attempt_feedback", "candidate was not measured"
+            ),
+        })
+    return (
+        "\n\n## Previous candidate feedback\n"
+        "Use these measured RTL deltas to avoid repeating rejected resource "
+        "migrations. Negative cycle deltas are improvements; byte reductions "
+        "are diagnostic and do not override makespan.\n"
+        + json.dumps(compact, sort_keys=True, indent=2)
+    )
+
+
 def render_prompt(
     config: dict[str, Any], iteration: int = 1,
     metrics: dict[str, Any] | None = None, clusters: list[str] | None = None,
     graph_context: str | None = None,
     baseline_metrics: dict[str, Any] | None = None,
+    attempt_history: list[dict[str, Any]] | None = None,
 ) -> str:
     skill_parts = []
     for index, item in enumerate(config["skills"], 1):
@@ -701,7 +775,11 @@ def render_prompt(
         "self_verify": config["prompt"].get("self_verify", ""),
         "gate_commands": gate_commands,
     }
-    return config["prompt"]["template"].format(**values).strip() + work_contract + "\n"
+    feedback = _attempt_history_context(attempt_history)
+    return (
+        config["prompt"]["template"].format(**values).strip()
+        + feedback + work_contract + "\n"
+    )
 
 
 def _prompt_metric_view(
@@ -743,6 +821,7 @@ def _prompt_metric_view(
         "overlap_saved_cycles", "net_parallelism_savings_cycles",
         "gross_overlap_cycles", "scheduler_idle_hole_cycles",
         "memory_compute_overlap_cycles", "max_concurrent_ops",
+        "logical_dram_payload_bytes", "modeled_dram_transaction_bytes",
         "dram_bus_utilization", "mvu_utilization", "vmm_utilization",
         "mmm_utilization", "spu_utilization", "load_utilization",
         "store_utilization", "vector_utilization", "control_utilization",
@@ -1093,6 +1172,15 @@ def _timing_schedule_context(schedule_path: Path) -> str:
         lines.append(f"- schedule_summary_unavailable={type(exc).__name__}")
         return "\n".join(lines)
 
+    profile = schedule.get("profile", {})
+    profile_canonical = json.dumps(
+        profile, sort_keys=True, separators=(",", ":")
+    ).encode()
+    lines.extend([
+        f"- timing_profile_name={schedule.get('model', 'unknown')}",
+        "- timing_profile_sha256=" + hashlib.sha256(profile_canonical).hexdigest(),
+    ])
+
     if schedule.get("backend") == "verilator-rtl":
         lines.extend([
             "- RTL resource mapping: DRAM commands use load/store plus the "
@@ -1138,6 +1226,10 @@ def _timing_schedule_context(schedule_path: Path) -> str:
         f"{metrics.get('scheduler_idle_hole_cycles', 'n/a')}",
         "- memory_compute_overlap_cycles="
         f"{metrics.get('memory_compute_overlap_cycles', 'n/a')}",
+        "- logical_dram_payload_bytes="
+        f"{metrics.get('logical_dram_payload_bytes', 'n/a')}",
+        "- modeled_dram_transaction_bytes="
+        f"{metrics.get('modeled_dram_transaction_bytes', 'n/a')}",
     ])
     diagnostics = schedule.get("optimization_diagnostics", {})
     bottlenecks = diagnostics.get("resource_bottlenecks", [])
@@ -1823,6 +1915,8 @@ def _summary_report(summary: dict[str, Any]) -> str:
             f"| Gross overlapped work | {baseline.get('gross_overlap_cycles', 0)} | {best.get('gross_overlap_cycles', 0)} |",
             f"| Scheduler idle holes | {baseline.get('scheduler_idle_hole_cycles', 0)} | {best.get('scheduler_idle_hole_cycles', 0)} |",
             f"| Memory/compute overlap cycles | {baseline.get('memory_compute_overlap_cycles', 0)} | {best.get('memory_compute_overlap_cycles', 0)} |",
+            f"| Logical DRAM payload bytes | {baseline.get('logical_dram_payload_bytes', 0)} | {best.get('logical_dram_payload_bytes', 0)} |",
+            f"| Modeled DRAM transaction bytes | {baseline.get('modeled_dram_transaction_bytes', 0)} | {best.get('modeled_dram_transaction_bytes', 0)} |",
             f"| Maximum concurrent operations | {baseline.get('max_concurrent_ops', 0)} | {best.get('max_concurrent_ops', 0)} |",
             f"| Load utilization | {float(baseline.get('load_utilization', 0)):.2%} | {float(best.get('load_utilization', 0)):.2%} |",
             f"| Store utilization | {float(baseline.get('store_utilization', 0)):.2%} | {float(best.get('store_utilization', 0)):.2%} |",
@@ -1899,6 +1993,7 @@ def execute_run(
     log = progress or (lambda _message: None)
     target = _repo_path(config["target"]["firmware"], "target.firmware")
     original = target.read_bytes()
+    current_profile_fingerprints = timing_profile_fingerprints(config)
 
     if resume:
         resume_path = Path(resume)
@@ -1918,6 +2013,14 @@ def execute_run(
         if not summary_path.is_file() or not candidate_path.is_file():
             raise ConfigError("resume directory lacks run-summary.json or candidate_best.c")
         summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        prior_profile_fingerprints = summary.get("timing_profile_fingerprints")
+        if (
+            prior_profile_fingerprints is not None
+            and prior_profile_fingerprints != current_profile_fingerprints
+        ):
+            raise ConfigError(
+                "resume timing profile contents differ from the original run"
+            )
         if summary.get("status") == "completed":
             raise ConfigError("completed runs cannot be resumed")
         if not baseline_probe_path.is_file():
@@ -1959,6 +2062,7 @@ def execute_run(
             "schema_version": 2,
             "goal": config["name"],
             "config_fingerprint": config_fingerprint(config),
+            "timing_profile_fingerprints": current_profile_fingerprints,
             "run_dir": run_dir_display,
             "status": "running",
             "stop_reason": "",
@@ -1982,6 +2086,9 @@ def execute_run(
         }
     else:
         summary.setdefault("interruptions", [])
+        summary.setdefault(
+            "timing_profile_fingerprints", current_profile_fingerprints
+        )
         summary["loop_mode"] = config["loop"].get("mode", "goal_driven")
         summary["mode_overridden"] = bool(
             summary.get("mode_overridden") or config.get("_mode_overridden")
@@ -2058,7 +2165,7 @@ def execute_run(
             prompt = render_prompt(
                 config, iteration, current_probe["metrics"],
                 current_probe["clusters"], current_probe.get("graph_context"),
-                baseline_metrics,
+                baseline_metrics, summary.get("iterations"),
             )
             if config["artifacts"].get("save_prompts"):
                 (run_dir / f"prompt-{iteration}.txt").write_text(prompt, encoding="utf-8")
@@ -2199,6 +2306,9 @@ def execute_run(
                 if config["artifacts"].get("save_probes"):
                     _write_json(run_dir / f"probe-{iteration}.json", candidate_probe)
                 record["probe"] = candidate_probe
+                record["attempt_feedback"] = _candidate_feedback(
+                    current_probe["metrics"], candidate_probe.get("metrics", {})
+                )
                 record["gates"] = gates
                 record["gates_passed"] = all(x["passed"] for x in gates)
                 gate_summary = ", ".join(

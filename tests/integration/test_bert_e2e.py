@@ -426,6 +426,43 @@ class _KvStorageCapture:
         self._npu._v_wr_dram = self._original_v_wr_dram
 
 
+def _find_cache_write_sequences(writes, expected_tiles, expected_offsets,
+                                atol=0.05):
+    """Find ordered cache writes matching one tensor, ignoring unrelated writes."""
+    matches = []
+    seen = set()
+    for first_index, (first_addr, first_value) in enumerate(writes):
+        if not np.allclose(first_value, expected_tiles[0], atol=atol, rtol=0):
+            continue
+        base = first_addr - expected_offsets[0]
+        selected = []
+        cursor = first_index
+        for expected_offset, expected_value in zip(expected_offsets, expected_tiles):
+            expected_addr = base + expected_offset
+            found = None
+            for index in range(cursor, len(writes)):
+                address, value = writes[index]
+                if address == expected_addr and np.allclose(
+                    value, expected_value, atol=atol, rtol=0
+                ):
+                    found = index
+                    break
+            if found is None:
+                selected = []
+                break
+            selected.append(found)
+            cursor = found + 1
+        key = (base, tuple(selected))
+        if selected and key not in seen:
+            seen.add(key)
+            matches.append({
+                "base": base,
+                "indices": selected,
+                "writes": [writes[index] for index in selected],
+            })
+    return matches
+
+
 def _check_kv_storage(npu, capture, golden, dim, hidden_size, seq_len):
     """Validate K/V values and enforce disjoint cache address ranges."""
     num_tiles = hidden_size // dim
@@ -467,32 +504,53 @@ def _check_kv_storage(npu, capture, golden, dim, hidden_size, seq_len):
         "K/V are absent from DRAM, but the MFU VRF capture does not contain "
         f"the required {2 * writes_per_tensor} tile writes")
 
-    k_writes = capture.mfu_writes[:writes_per_tensor]
-    v_writes = capture.mfu_writes[writes_per_tensor:2 * writes_per_tensor]
-    k_base = k_writes[0][0]
-    v_base = v_writes[0][0]
     tensor_span = writes_per_tensor * dim
     expected_offsets = [
         pos * num_tiles * dim + tr * dim
         for pos in range(seq_len) for tr in range(num_tiles)
     ]
-    expected_k_addrs = [k_base + offset for offset in expected_offsets]
-    expected_v_addrs = [v_base + offset for offset in expected_offsets]
-    actual_k_addrs = [addr for addr, _ in k_writes]
-    actual_v_addrs = [addr for addr, _ in v_writes]
+    expected_k_tiles = [
+        golden['K'][pos][tr * dim:(tr + 1) * dim]
+        for pos in range(seq_len) for tr in range(num_tiles)
+    ]
+    expected_v_tiles = [
+        golden['V'][pos][tr * dim:(tr + 1) * dim]
+        for pos in range(seq_len) for tr in range(num_tiles)
+    ]
+    k_candidates = _find_cache_write_sequences(
+        capture.mfu_writes, expected_k_tiles, expected_offsets)
+    v_candidates = _find_cache_write_sequences(
+        capture.mfu_writes, expected_v_tiles, expected_offsets)
+    assert k_candidates, "no ordered MFU VRF write sequence matches golden K"
+    assert v_candidates, "no ordered MFU VRF write sequence matches golden V"
 
-    assert actual_k_addrs == expected_k_addrs, (
-        f"K cache layout is not contiguous: {actual_k_addrs}")
-    assert actual_v_addrs == expected_v_addrs, (
-        f"V cache layout is not contiguous: {actual_v_addrs}")
+    valid_pairs = []
+    for k_candidate in k_candidates:
+        k_base = k_candidate["base"]
+        k_range = range(k_base, k_base + tensor_span)
+        for v_candidate in v_candidates:
+            v_base = v_candidate["base"]
+            v_range = range(v_base, v_base + tensor_span)
+            if k_range.stop <= v_range.start or v_range.stop <= k_range.start:
+                valid_pairs.append((k_candidate, v_candidate))
+    if not valid_pairs:
+        k_base = k_candidates[0]["base"]
+        v_base = v_candidates[0]["base"]
+        overlap_start = max(k_base, v_base)
+        raise AssertionError(
+            "K/V cache ranges overlap in MFU_INITIAL_VRF: "
+            f"K=[{k_base}, {k_base + tensor_span}), "
+            f"V=[{v_base}, {v_base + tensor_span}), "
+            f"overlap starts at {overlap_start}")
 
-    k_range = set(range(k_base, k_base + tensor_span))
-    v_range = set(range(v_base, v_base + tensor_span))
-    overlap = sorted(k_range & v_range)
-    assert not overlap, (
-        "K/V cache ranges overlap in MFU_INITIAL_VRF: "
-        f"K=[{k_base}, {k_base + tensor_span}), "
-        f"V=[{v_base}, {v_base + tensor_span}), overlap starts at {overlap[0]}")
+    k_candidate, v_candidate = min(
+        valid_pairs,
+        key=lambda pair: (pair[0]["indices"][-1], pair[1]["indices"][-1]),
+    )
+    k_base = k_candidate["base"]
+    v_base = v_candidate["base"]
+    k_writes = k_candidate["writes"]
+    v_writes = v_candidate["writes"]
 
     vrf_capacity = len(npu._vrf[MEM_MFU_INITIAL_VRF])
     assert max(k_base + tensor_span, v_base + tensor_span) <= vrf_capacity, (

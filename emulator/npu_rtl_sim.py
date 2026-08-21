@@ -841,6 +841,21 @@ def _build_schedule(commands: list[EncodedCommand], rows: dict[int, dict[str, in
     }
     overlap = _intersection_length(memory_intervals, compute_intervals)
     dram_busy_cycles = _interval_union_length(memory_intervals)
+    logical_dram_payload_bytes = 0
+    modeled_dram_transaction_bytes = 0
+    for record in records:
+        memory = record.get("memory")
+        if not memory:
+            continue
+        elements = int(memory.get(
+            "total_elements",
+            int(memory.get("elements", 0)) * int(memory.get("count", 1)),
+        ))
+        payload_bytes = elements * profile.memory_element_bytes
+        logical_dram_payload_bytes += payload_bytes
+        modeled_dram_transaction_bytes += max(
+            payload_bytes, profile.memory_minimum_transfer_bytes
+        )
     busy_cycles = {
         name: _interval_union_length(intervals)
         for name, intervals in unit_intervals.items()
@@ -896,6 +911,8 @@ def _build_schedule(commands: list[EncodedCommand], rows: dict[int, dict[str, in
             overlap / dram_busy_cycles
             if memory_intervals else 0.0
         ),
+        "logical_dram_payload_bytes": logical_dram_payload_bytes,
+        "modeled_dram_transaction_bytes": modeled_dram_transaction_bytes,
         "max_concurrent_ops": _max_concurrency(records),
         **{f"{name}_utilization": value for name, value in utilization.items()},
         **counters,

@@ -289,12 +289,58 @@ def test_cross_layer_graph_links_tensors_source_timing_and_opportunities(tmp_pat
     assert "repeated_frozen_load" in kinds
     assert "intermediate_materialization" in kinds
     assert "scheduled_wait" in kinds
+    materialization = next(
+        item for item in graph.opportunities
+        if item["kind"] == "intermediate_materialization"
+    )
+    assert materialization["producer_consumer_pairs"] == [[1, 2]]
+    assert materialization["resource_migration"][
+        "requires_candidate_rtl_replay"
+    ] is True
+    assert "baseline_resource_footprint" in materialization
     assert graph.metadata["has_source_provenance"] is True
     assert any(edge.kind == "tensor_read" for edge in graph.edges)
     path = tmp_path / "graph.json"
     graph.write_json(path)
     assert '"schema_version": 1' in path.read_text(encoding="utf-8")
     assert "fw.c:12" in graph.to_text()
+
+
+def test_cross_layer_materialization_pairs_each_read_with_latest_writer():
+    manifest = WorkloadManifest(name="pairing", tensors=[
+        TensorRegion("scratch", 0x20, 4, role="intermediate"),
+    ])
+    events = [
+        {"idx": 1, "command_id": 1, "op": "V_WR_DRAM", "uses": [],
+         "defs": [], "tensor_reads": [], "tensor_writes": ["scratch"]},
+        {"idx": 2, "command_id": 2, "op": "V_RD_DRAM", "uses": [],
+         "defs": [], "tensor_reads": ["scratch"], "tensor_writes": []},
+        {"idx": 3, "command_id": 3, "op": "V_WR_DRAM", "uses": [],
+         "defs": [], "tensor_reads": [], "tensor_writes": ["scratch"]},
+        {"idx": 4, "command_id": 4, "op": "V_RD_DRAM", "uses": [],
+         "defs": [], "tensor_reads": ["scratch"], "tensor_writes": []},
+    ]
+    schedule = [
+        {"command_id": item["command_id"], "idx": item["idx"],
+         "op": item["op"], "start_cycle": item["idx"] * 2,
+         "end_cycle": item["idx"] * 2 + 2, "duration_cycles": 2,
+         "queue_wait_cycles": 1, "resources": ["dram_bus"],
+         "timing_model": {"memory_tier": "dram", "latency_cycles": 2,
+                          "initiation_interval": 1}}
+        for item in events
+    ]
+
+    graph = build_cross_layer_graph(events, manifest, schedule)
+    materialization = next(
+        item for item in graph.opportunities
+        if item["kind"] == "intermediate_materialization"
+    )
+
+    assert materialization["producer_consumer_pairs"] == [[1, 2], [3, 4]]
+    assert materialization["events"] == [1, 2, 3, 4]
+    assert materialization["baseline_resource_footprint"]["resource_cycles"] == {
+        "dram_bus": 8,
+    }
 
 
 def test_cross_layer_graph_maps_raw_inc_timing_to_expanded_events():

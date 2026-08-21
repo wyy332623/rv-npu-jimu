@@ -30,6 +30,7 @@ prompt:
     - Do not modify the RTL, timing profile, workload manifest, simulator adapter, emulator, tests, artifacts, metrics, or build system.
     - Treat total_bytes, instruction counts, and DRAM access counts as diagnostic evidence, but optimize and promote only on rtl_predicted_npu_cycles.
     - Do not equate reduced DRAM traffic, summed command durations, queue waits, or Python wall-clock time with an RTL makespan improvement.
+    - Compare logical_dram_payload_bytes with modeled_dram_transaction_bytes so minimum DRAM bursts are visible, then rely on candidate RTL replay for the final parallel makespan result.
     - Implement at most one primary hypothesis in this audit. If the prescribed transformation is already present or cannot be proved legal, make no unrelated change.
     - This loop is non-interactive; do not ask for confirmation or offer alternative optimizations.
   self_verify: Run at most one targeted quick check, then return control; the closed-loop controller owns complete gates and official RTL scoring.
@@ -91,6 +92,8 @@ probe:
     - scheduler_idle_hole_cycles
     - memory_compute_overlap_cycles
     - memory_compute_overlap_ratio
+    - logical_dram_payload_bytes
+    - modeled_dram_transaction_bytes
     - max_concurrent_ops
     - dram_bus_utilization
     - load_utilization

@@ -77,8 +77,24 @@ class CrossLayerGraph:
             "Cross-layer firmware evidence graph",
             f"  tensors={len(tensors)} commands={len(commands)} edges={len(self.edges)}",
             "",
-            "Tensor regions:",
+            "Evidence-backed opportunities:",
         ]
+        for item in self.opportunities[:max_opportunities]:
+            footprint = item.get("baseline_resource_footprint") or {}
+            footprint_text = ""
+            if footprint:
+                footprint_text = (
+                    f" duration={footprint.get('duration_cycles', 0)}"
+                    f" wait={footprint.get('queue_wait_cycles', 0)}"
+                    f" resources={footprint.get('resource_cycles', {})}"
+                )
+            lines.append(
+                f"  [{item['kind']}] priority={item.get('priority', 'normal')} "
+                f"events={item.get('events', [])}{footprint_text}: {item['summary']}"
+            )
+        if not self.opportunities:
+            lines.append("  (none detected)")
+        lines.extend(["", "Tensor regions:"])
         if tensors:
             for node in tensors:
                 attrs = node.attributes
@@ -107,14 +123,6 @@ class CrossLayerGraph:
             )
         if len(commands) > max_commands:
             lines.append(f"  ... {len(commands) - max_commands} commands omitted")
-        lines.extend(["", "Evidence-backed opportunities:"])
-        for item in self.opportunities[:max_opportunities]:
-            lines.append(
-                f"  [{item['kind']}] priority={item.get('priority', 'normal')} "
-                f"events={item.get('events', [])}: {item['summary']}"
-            )
-        if not self.opportunities:
-            lines.append("  (none detected)")
         return "\n".join(lines)
 
     def to_dot(self) -> str:
@@ -352,17 +360,38 @@ def _derive_opportunities(events: list[dict[str, Any]],
         region = region_by_name.get(name)
         read_ids = reads.get(name, [])
         if write_ids and read_ids and region and not region.observable:
-            pairs = [(writer, reader) for writer in write_ids for reader in read_ids
-                     if writer < reader]
+            # Pair every consumer with its actual latest preceding producer.
+            # A Cartesian product exaggerates reuse after a location is
+            # overwritten and gives the optimization agent false evidence.
+            pairs = []
+            for reader in sorted(read_ids):
+                preceding = [writer for writer in write_ids if writer < reader]
+                if preceding:
+                    pairs.append((max(preceding), reader))
             if pairs:
                 selected = pairs[:20]
                 ids = sorted({value for pair in selected for value in pair})
+                footprint = _resource_footprint(ids, timing)
                 opportunities.append({
                     "kind": "intermediate_materialization",
                     "priority": "high" if len(pairs) >= 2 else "normal",
                     "tensor": name,
                     "events": ids,
+                    "producer_consumer_pairs": [list(pair) for pair in selected],
+                    "producer_events": sorted({pair[0] for pair in selected}),
+                    "consumer_events": sorted({pair[1] for pair in selected}),
                     "sources": _unique_sources(source_by_id, ids),
+                    "baseline_resource_footprint": footprint,
+                    "resource_migration": {
+                        "from": ["load/store", "dram_bus"],
+                        "to": ["vector", "on_chip_sram_bank"],
+                        "requires_candidate_rtl_replay": True,
+                    },
+                    "risk_flags": [
+                        "lost_memory_compute_overlap",
+                        "vector_controller_pressure",
+                        "local_bank_or_alias_dependency",
+                    ],
                     "summary": (
                         f"non-observable tensor {name!r} is stored then reloaded "
                         f"across {len(pairs)} producer-consumer pair(s); test on-chip retention"
@@ -409,6 +438,47 @@ def _derive_opportunities(events: list[dict[str, Any]],
     return sorted(opportunities, key=lambda item: (
         item.get("priority") != "high", item["kind"], item.get("events", [])
     ))
+
+
+def _resource_footprint(event_ids: list[int],
+                        timing: dict[int, dict[str, Any]]) -> dict[str, Any]:
+    """Summarize latency, II, overlap-sensitive resources for one opportunity."""
+    records = [timing[event_id] for event_id in event_ids if event_id in timing]
+    resource_cycles: Counter[str] = Counter()
+    contracts = []
+    for record in records:
+        duration = int(record.get("duration_cycles", 0) or 0)
+        for resource in record.get("resources", []):
+            resource_cycles[str(resource)] += duration
+        model = record.get("timing_model") or {}
+        contracts.append({
+            "event": int(record.get("idx", record.get("command_id", -1))),
+            "op": record.get("op"),
+            "start_cycle": record.get("start_cycle"),
+            "end_cycle": record.get("end_cycle", record.get("finish_cycle")),
+            "latency_cycles": int(model.get("latency_cycles", duration) or 0),
+            "initiation_interval": int(model.get("initiation_interval", 1) or 1),
+            "latency_source": model.get("latency_source", "schedule"),
+            "memory_tier": model.get("memory_tier"),
+            "resources": list(record.get("resources", [])),
+            "critical": bool(record.get("critical_path") or record.get("critical")),
+            "blocking_reasons": list(record.get("blocking_reasons", [])),
+        })
+    return {
+        "event_count": len(records),
+        "duration_cycles": sum(
+            int(record.get("duration_cycles", 0) or 0) for record in records
+        ),
+        "queue_wait_cycles": sum(
+            int(record.get("queue_wait_cycles", 0) or 0) for record in records
+        ),
+        "resource_cycles": dict(sorted(resource_cycles.items())),
+        "critical_event_count": sum(
+            bool(record.get("critical_path") or record.get("critical"))
+            for record in records
+        ),
+        "timing_contracts": contracts,
+    }
 
 
 def _timing_index(schedule) -> dict[int, dict[str, Any]]:

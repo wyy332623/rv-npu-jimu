@@ -31,6 +31,8 @@ prompt:
     - If K/V caching is already present, continue with the next causal DRAM opportunity instead of repeating or merely re-auditing K/V.
     - Implement at most one primary hypothesis per iteration so the measured RTL makespan change remains attributable.
     - Account for tensor lifetime, VRF capacity, address-range disjointness, bank conflicts, semantic dependencies, and lost memory-compute overlap before editing.
+    - Use producer-consumer event pairs and their measured resource footprints to predict whether a DRAM-to-register migration removes causal work or merely shifts pressure to vector and SRAM-bank resources.
+    - Treat modeled_dram_transaction_bytes as the timing-model traffic estimate; logical payload bytes alone can understate minimum-burst cost. Confirm every prediction with candidate RTL replay.
     - A reduction in DRAM traffic is not sufficient for promotion when RTL makespan does not improve.
     - Do not modify the RTL, timing profile, workload manifest, simulator adapter, emulator, tests, artifacts, metrics, or build system.
     - This loop is non-interactive; do not ask for confirmation. If no new legal DRAM hypothesis remains, return without unrelated changes.
@@ -100,6 +102,8 @@ probe:
     - scheduler_idle_hole_cycles
     - memory_compute_overlap_cycles
     - memory_compute_overlap_ratio
+    - logical_dram_payload_bytes
+    - modeled_dram_transaction_bytes
     - max_concurrent_ops
     - dram_bus_utilization
     - load_utilization

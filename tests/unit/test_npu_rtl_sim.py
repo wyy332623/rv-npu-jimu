@@ -82,7 +82,7 @@ def test_encoder_ssa_renames_pipeline_but_keeps_physical_storage():
 def test_rtl_overlaps_independent_dram_and_compute(tmp_path):
     result = simulate_trace([
         event(0, "M_RD_DRAM", target="mmm", defs=[("MRF",)],
-              memory=memory("read", 0, 16)),
+              memory=memory("read", 0, 4)),
         event(1, "V_GELU", uses=[("pipe",)], defs=[("pipe",)]),
     ], {"native_dim": 4}, PROFILE, tmp_path / "schedule.json")
 
@@ -106,6 +106,8 @@ def test_rtl_overlaps_independent_dram_and_compute(tmp_path):
     assert metrics["gross_overlap_cycles"] - metrics[
         "scheduler_idle_hole_cycles"
     ] == metrics["net_parallelism_savings_cycles"]
+    assert metrics["logical_dram_payload_bytes"] == 8
+    assert metrics["modeled_dram_transaction_bytes"] == 16
     critical_ids = {
         item["idx"] for item in result["events"] if item["critical"]
     }

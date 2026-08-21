@@ -29,6 +29,8 @@ def test_all_builtin_goals_validate():
         "dram-optimization", "compute-optimization", "combined",
         "cycle-latency-optimization",
         "rtl-cycle-optimization",
+        "rtl-dram-optimization",
+        "rtl-dram-exploration",
     ):
         loaded = closed_loop.load_config(goal)
         assert loaded["schema_version"] == 1
@@ -72,6 +74,30 @@ def test_prompt_is_stable_and_skill_ordered(config):
     assert "Never run `make clean` from the repository root" in first
     assert "Never delete, move, rename, or modify `jimu-dse/results`" in first
     assert "non-interactive optimization iteration" in first
+
+
+def test_prompt_includes_rejected_candidate_feedback(config):
+    prompt = closed_loop.render_prompt(
+        config, 2, {"total_bytes": 90}, ["cluster"],
+        attempt_history=[{
+            "iteration": 1,
+            "status": "not_improved",
+            "promoted": False,
+            "attempt_feedback": {
+                "rtl_predicted_npu_cycles": {
+                    "reference": 100, "candidate": 105, "delta": 5,
+                },
+                "modeled_dram_transaction_bytes": {
+                    "reference": 64, "candidate": 48, "delta": -16,
+                },
+            },
+        }],
+    )
+
+    assert "Previous candidate feedback" in prompt
+    assert '"status": "not_improved"' in prompt
+    assert '"rtl_predicted_npu_cycles"' in prompt
+    assert "byte reductions are diagnostic" in prompt
 
 
 def test_cycle_prompt_includes_iteration_work_contract():
@@ -176,11 +202,15 @@ def test_rtl_timing_schedule_context_uses_rtl_resources(tmp_path):
     schedule_path = tmp_path / "timing-schedule.json"
     schedule_path.write_text(json.dumps({
         "backend": "verilator-rtl",
+        "model": "test-rtl-profile",
+        "profile": {"memory": {"minimum_transfer_bytes": 16}},
         "metrics": {
             "rtl_predicted_npu_cycles": 100,
             "parallel_predicted_npu_cycles": 100,
             "overlap_saved_cycles": 20,
             "memory_compute_overlap_cycles": 10,
+            "logical_dram_payload_bytes": 8,
+            "modeled_dram_transaction_bytes": 16,
         },
         "optimization_diagnostics": {
             "resource_bottlenecks": [
@@ -197,7 +227,11 @@ def test_rtl_timing_schedule_context_uses_rtl_resources(tmp_path):
 
     assert "RTL resource mapping" in context
     assert "128-bit RTL scoreboard" in context
+    assert "timing_profile_name=test-rtl-profile" in context
+    assert "timing_profile_sha256=" in context
     assert "rtl_cycles=100" in context
+    assert "logical_dram_payload_bytes=8" in context
+    assert "modeled_dram_transaction_bytes=16" in context
     assert "wait=7 cycles, reasons=bank" in context
 
 
@@ -474,6 +508,42 @@ def test_resume_fingerprint_is_stable(config):
     changed = copy.deepcopy(resolved)
     changed["target"]["hardware"]["dim"] = 8
     assert closed_loop.config_fingerprint(resolved) != closed_loop.config_fingerprint(changed)
+
+
+def test_timing_profile_fingerprint_tracks_file_contents(
+    monkeypatch, tmp_path
+):
+    config = closed_loop.load_config("rtl-dram-exploration")
+    profile = tmp_path / "profile.yaml"
+    profile.write_text("name: first\n", encoding="utf-8")
+    monkeypatch.setattr(closed_loop, "_repo_path", lambda *_args: profile)
+
+    first = closed_loop.timing_profile_fingerprints(config)
+    profile.write_text("name: second\n", encoding="utf-8")
+    second = closed_loop.timing_profile_fingerprints(config)
+
+    assert first["cycle_model"]["sha256"] != second["cycle_model"]["sha256"]
+
+
+def test_candidate_feedback_exposes_parallelism_and_transaction_tradeoff():
+    feedback = closed_loop._candidate_feedback(
+        {
+            "rtl_predicted_npu_cycles": 100,
+            "logical_dram_payload_bytes": 64,
+            "modeled_dram_transaction_bytes": 96,
+            "memory_compute_overlap_cycles": 20,
+        },
+        {
+            "rtl_predicted_npu_cycles": 104,
+            "logical_dram_payload_bytes": 48,
+            "modeled_dram_transaction_bytes": 80,
+            "memory_compute_overlap_cycles": 8,
+        },
+    )
+
+    assert feedback["rtl_predicted_npu_cycles"]["delta"] == 4
+    assert feedback["modeled_dram_transaction_bytes"]["delta"] == -16
+    assert feedback["memory_compute_overlap_cycles"]["delta"] == -12
 
 
 def test_gate_failure_is_reported(config, monkeypatch):

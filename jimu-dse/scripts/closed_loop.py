@@ -28,6 +28,12 @@ except ImportError:  # pragma: no cover - exercised by CLI environments
 REPO_ROOT = Path(__file__).resolve().parents[2]
 if str(REPO_ROOT) not in sys.path:
     sys.path.insert(0, str(REPO_ROOT))
+from emulator.bert_layout import (  # noqa: E402
+    LEGACY_LAYOUT,
+    PACKED_LAYOUT,
+    SUPPORTED_LAYOUTS,
+    bert_dram_layout,
+)
 GOALS_DIR = REPO_ROOT / "jimu-dse" / "goals"
 RESULTS_DIR = REPO_ROOT / "jimu-dse" / "results"
 SUPPORTED_METRICS = {
@@ -89,7 +95,7 @@ TOP_LEVEL_KEYS = {
 SECTION_KEYS = {
     "target": {
         "firmware", "baseline", "allowed_files", "hardware", "sequence_lengths",
-        "build",
+        "build", "layout",
     },
     "agent": {
         "backend", "model", "timeout_seconds", "context_files", "work_budget",
@@ -242,6 +248,25 @@ def validate_config(config: dict[str, Any]) -> None:
     seqs = target["sequence_lengths"]
     if not isinstance(seqs, list) or not seqs or any(not isinstance(x, int) or x < 1 for x in seqs):
         raise ConfigError("target.sequence_lengths must contain positive integers")
+    layout_version = target.get("layout", LEGACY_LAYOUT)
+    if layout_version not in SUPPORTED_LAYOUTS:
+        raise ConfigError(
+            f"target.layout must be one of {', '.join(sorted(SUPPORTED_LAYOUTS))}"
+        )
+    if layout_version == PACKED_LAYOUT:
+        try:
+            for seq_len in seqs:
+                bert_dram_layout(
+                    hardware["dim"], hardware["hidden"], seq_len,
+                    version=layout_version,
+                )
+        except ValueError as exc:
+            raise ConfigError(f"invalid packed BERT layout: {exc}") from exc
+        if hardware["dim"] > 8 and hardware["num_head"] != 1:
+            raise ConfigError(
+                "packed BERT layouts wider than 8 require num_head=1 with the "
+                "current 8-bit repeating vector mask"
+            )
     build_spec = target.get("build")
     if build_spec is not None:
         if not isinstance(build_spec, dict):
@@ -1116,23 +1141,15 @@ def build_firmware(config: dict[str, Any], seq_len: int) -> dict[str, Any]:
             "passed": result["exit_code"] == 0 and elf_path.is_file(),
         })
         return result
-    proj_base = hidden * seq_len + 4
-    mat_size = hidden * hidden
-    stride = mat_size + hidden
-    num_tiles = hidden // dim
-    ln_base = proj_base + 6 * stride
-    ln_size = num_tiles * 8
+    layout = bert_dram_layout(
+        dim, hidden, seq_len,
+        version=config["target"].get("layout", LEGACY_LAYOUT),
+    )
     env = os.environ.copy()
+    env.update(layout.build_environment())
     env.update({
         "CC": os.getenv("CC", "riscv64-unknown-elf-gcc"),
-        "NATIVE_DIM": str(dim), "SEQ_LEN": str(seq_len),
-        "_HIDDEN_SIZE": str(hidden), "_PROJ_BASE": str(proj_base),
-        "_MAT_SIZE": str(mat_size), "_STRIDE": str(stride),
-        "_NUM_TILES": str(num_tiles), "_LN1_GAMMA": str(ln_base),
-        "_LN1_BETA": str(ln_base + ln_size),
-        "_LN2_GAMMA": str(ln_base + 2 * ln_size),
-        "_LN2_BETA": str(ln_base + 3 * ln_size),
-        "_SCRATCH": "1280", "NUM_HEAD": str(heads),
+        "NUM_HEAD": str(heads),
     })
     command = ["make", "-C", "firmware", f"BUILD_DIR=build_dim{dim}", "clean", "all"]
     started = time.monotonic()

@@ -57,6 +57,7 @@ validate-goals:
 	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal rtl-cycle-optimization
 	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal rtl-dram-optimization
 	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal rtl-dram-exploration
+	$(PYTHON) jimu-dse/scripts/closed_loop.py validate-config --goal rtl-cycle-optimization-large
 
 list-goals:
 	$(PYTHON) jimu-dse/scripts/closed_loop.py list-goals

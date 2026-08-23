@@ -1,0 +1,42 @@
+schema_version: 1
+name: bert-dim16-h16-seq16
+firmware: ../../firmware/build_dim16/bert.elf
+hardware_profile: ../timing/npu-timed-dim16.yaml
+cycle_limit: 1000000
+drain_on_halt: true
+metadata:
+  native_dim: 16
+  hidden_size: 16
+  seq_len: 16
+  num_head: 1
+  layout: packed-v2
+tensors:
+  - {name: input_sequence, address: 0, length: 256, shape: [16, 16], role: input}
+  - {name: weight_q, address: 272, length: 256, shape: [16, 16], role: parameter, frozen: true}
+  - {name: bias_q, address: 528, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: weight_k, address: 544, length: 256, shape: [16, 16], role: parameter, frozen: true}
+  - {name: bias_k, address: 800, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: weight_v, address: 816, length: 256, shape: [16, 16], role: parameter, frozen: true}
+  - {name: bias_v, address: 1072, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: weight_self_output, address: 1088, length: 256, shape: [16, 16], role: parameter, frozen: true}
+  - {name: bias_self_output, address: 1344, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: weight_ffn1, address: 1360, length: 256, shape: [16, 16], role: parameter, frozen: true}
+  - {name: bias_ffn1, address: 1616, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: weight_ffn2, address: 1632, length: 256, shape: [16, 16], role: parameter, frozen: true}
+  - {name: bias_ffn2, address: 1888, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: ln1_gamma, address: 1904, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: ln1_beta, address: 1920, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: ln2_gamma, address: 1936, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: ln2_beta, address: 1952, length: 16, shape: [16], role: parameter, frozen: true}
+  - {name: q_sequence, address: 1968, length: 256, shape: [16, 16], role: intermediate}
+  - {name: k_sequence, address: 2224, length: 256, shape: [16, 16], role: intermediate}
+  - {name: v_sequence, address: 2480, length: 256, shape: [16, 16], role: intermediate}
+  - {name: attention_scratch, address: 2736, length: 16, shape: [16], role: intermediate}
+  - {name: layernorm_scratch, address: 2752, length: 32, shape: [2, 16], role: intermediate}
+  - {name: scratch_z, address: 2784, length: 16, shape: [16], role: intermediate}
+  - {name: scratch_ln1, address: 2800, length: 16, shape: [16], role: intermediate}
+  - {name: scratch_gelu, address: 2816, length: 16, shape: [16], role: intermediate}
+  - {name: self_output_scratch, address: 2832, length: 16, shape: [16], role: intermediate}
+  - {name: residual_sequence, address: 2848, length: 256, shape: [16, 16], role: intermediate}
+  - {name: output_sequence, address: 3104, length: 256, shape: [16, 16], role: output, observable: true, tolerance: 0.001}
+  - {name: unit_vectors, address: 3360, length: 256, shape: [16, 16], role: parameter, frozen: true}

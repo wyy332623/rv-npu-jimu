@@ -29,6 +29,11 @@ from pathlib import Path
 from emulator.npu_device_mini import NpuDeviceMini, MEM_DRAM, MEM_MFU_INITIAL_VRF
 from emulator.trace_recorder import TraceRecorder
 from emulator.npu_instrumentor import NpuInstrumentor, OpBoundary
+from emulator.bert_layout import (
+    LEGACY_LAYOUT,
+    PACKED_LAYOUT,
+    bert_dram_layout,
+)
 
 # RISC-V ISS imports are optional (requires pyelftools)
 # HDL imports are optional (requires amaranth)
@@ -86,8 +91,12 @@ OP_NAMES = {
 # Shared helpers
 # ═══════════════════════════════════════════════════════════════════════
 
+def _layout_version_for_shape(dim, hidden_size):
+    return PACKED_LAYOUT if dim >= 16 and hidden_size >= 16 else LEGACY_LAYOUT
+
+
 def _generate_golden(hidden_size, num_head, head_size, seq_len=1,
-                     native_dim=None, seed=_SEED):
+                     native_dim=None, seed=_SEED, layout_version=LEGACY_LAYOUT):
     """FP16 golden reference matching emulator + firmware precision exactly.
 
     The forward pass in gen_golden_bert.py now faithfully reproduces the
@@ -122,26 +131,23 @@ def _generate_golden(hidden_size, num_head, head_size, seq_len=1,
     # precision, so sim_out is simply golden['out'].
     sim_out_buf = golden['out'].copy()
 
-    # LN params placed after the 6 projection matrices+biases.
-    # Each LN param has num_tiles tile rows at stride 8.
-    proj_base = hidden_size * seq_len + 4
-    mat_size = hidden_size * hidden_size
-    stride = mat_size + hidden_size
-    ln_size = (hidden_size // native_dim) * 8
-    ln_base = proj_base + 6 * stride
+    # LN params follow the six projection matrix/bias blocks in both layouts.
+    layout = bert_dram_layout(
+        native_dim, hidden_size, seq_len, version=layout_version)
     ln_offsets = {
-        'ln1_gamma': ln_base,
-        'ln1_beta':  ln_base + ln_size,
-        'ln2_gamma': ln_base + 2 * ln_size,
-        'ln2_beta':  ln_base + 3 * ln_size,
-        'scratch': 0x500,
+        'ln1_gamma': layout.ln1_gamma,
+        'ln1_beta': layout.ln1_beta,
+        'ln2_gamma': layout.ln2_gamma,
+        'ln2_beta': layout.ln2_beta,
+        'scratch': layout.layernorm_scratch,
     }
 
     return golden, params, sim_out_buf, ln_offsets
 
 
 
-def _build_firmware(dim, seq_len=1, num_head=2, hidden_size=None):
+def _build_firmware(dim, seq_len=1, num_head=2, hidden_size=None,
+                    layout_version=None):
     """Build firmware with given NATIVE_DIM, SEQ_LEN, and NUM_HEAD. Return elf path.
     DRAM layout macros are computed here and passed via environment.
     If hidden_size is given, use it; otherwise default to 2*dim (num_tiles=2)."""
@@ -149,29 +155,9 @@ def _build_firmware(dim, seq_len=1, num_head=2, hidden_size=None):
     build_dir = f'build_dim{dim}'
     abs_build_dir = fw / build_dir
     hidden = hidden_size if hidden_size is not None else 2 * dim
-    proj_base = hidden * seq_len + 4
-    mat_size = hidden * hidden
-    stride = mat_size + hidden
-    num_tiles = hidden // dim
-    proj_end = proj_base + 6 * stride  # past all 6 matrices+biases
-    ln_base = proj_end  # = proj_base + 6 * stride
-    ln_size = num_tiles * 8  # each LN param has num_tiles tile rows at stride 8
-    scratch_addr = 0x500  # DRAM scratch area for LN saves
-    env = {
-        'NATIVE_DIM': str(dim),
-        'SEQ_LEN': str(seq_len),
-        '_HIDDEN_SIZE': str(hidden),
-        '_PROJ_BASE': str(proj_base),
-        '_MAT_SIZE': str(mat_size),
-        '_STRIDE': str(stride),
-        '_NUM_TILES': str(num_tiles),
-        '_LN1_GAMMA': str(ln_base),
-        '_LN1_BETA': str(ln_base + ln_size),
-        '_LN2_GAMMA': str(ln_base + 2 * ln_size),
-        '_LN2_BETA': str(ln_base + 3 * ln_size),
-        '_SCRATCH': str(scratch_addr),
-        'NUM_HEAD': str(num_head),
-    }
+    version = layout_version or _layout_version_for_shape(dim, hidden)
+    layout = bert_dram_layout(dim, hidden, seq_len, version=version)
+    env = {**layout.build_environment(), 'NUM_HEAD': str(num_head)}
     import os
     full_env = {**os.environ, **env}
     r = subprocess.run(
@@ -376,20 +362,23 @@ def _extract_tiled_from_dram(dram, base_addr, dim, hidden_size, stride=8):
 
 
 def _extract_q_from_emulator(npu, dim, hidden_size, pos=0):
-    """Extract Q vector from DRAM save locations.
-    With dot-product attention, Q is saved per position at
-    0x200 + pos * num_tiles * 8."""
-    num_tiles = hidden_size // dim
-    base = 0x200 + pos * num_tiles * 8
-    return _extract_tiled_from_dram(npu._vrf[MEM_DRAM], base, dim, hidden_size)
+    """Extract one Q vector using the active versioned DRAM layout."""
+    layout = bert_dram_layout(
+        dim, hidden_size, npu._seq_len,
+        version=_layout_version_for_shape(dim, hidden_size))
+    base = layout.position_address(layout.save_q_base, pos)
+    return _extract_tiled_from_dram(
+        npu._vrf[MEM_DRAM], base, dim, hidden_size, layout.tile_stride)
 
 
 def _extract_output_from_emulator(npu, dim, hidden_size, pos=0):
-    """Extract final output vector from DRAM save locations.
-    Firmware saves at 0x800 + pos * num_tiles * 8."""
-    num_tiles = hidden_size // dim
-    base = 0x800 + pos * num_tiles * 8
-    return _extract_tiled_from_dram(npu._vrf[MEM_DRAM], base, dim, hidden_size)
+    """Extract one final output vector from the active DRAM layout."""
+    layout = bert_dram_layout(
+        dim, hidden_size, npu._seq_len,
+        version=_layout_version_for_shape(dim, hidden_size))
+    base = layout.position_address(layout.save_out_base, pos)
+    return _extract_tiled_from_dram(
+        npu._vrf[MEM_DRAM], base, dim, hidden_size, layout.tile_stride)
 
 
 class _KvStorageCapture:
@@ -467,14 +456,17 @@ def _check_kv_storage(npu, capture, golden, dim, hidden_size, seq_len):
     """Validate K/V values and enforce disjoint cache address ranges."""
     num_tiles = hidden_size // dim
     writes_per_tensor = seq_len * num_tiles
-    k_dram_base = 0x300
-    v_dram_base = 0x400
+    layout = bert_dram_layout(
+        dim, hidden_size, seq_len,
+        version=_layout_version_for_shape(dim, hidden_size))
+    k_dram_base = layout.save_k_base
+    v_dram_base = layout.save_v_base
     k_dram_addrs = {
-        k_dram_base + pos * num_tiles * 8 + tr * 8
+        layout.position_address(k_dram_base, pos, tr)
         for pos in range(seq_len) for tr in range(num_tiles)
     }
     v_dram_addrs = {
-        v_dram_base + pos * num_tiles * 8 + tr * 8
+        layout.position_address(v_dram_base, pos, tr)
         for pos in range(seq_len) for tr in range(num_tiles)
     }
     observed_dram_addrs = set(capture.dram_writes)
@@ -485,11 +477,11 @@ def _check_kv_storage(npu, capture, golden, dim, hidden_size, seq_len):
         print("  K/V storage: baseline DRAM layout")
         for pos in range(seq_len):
             k_actual = _extract_tiled_from_dram(
-                npu._vrf[MEM_DRAM], k_dram_base + pos * num_tiles * 8,
-                dim, hidden_size)
+                npu._vrf[MEM_DRAM], layout.position_address(k_dram_base, pos),
+                dim, hidden_size, layout.tile_stride)
             v_actual = _extract_tiled_from_dram(
-                npu._vrf[MEM_DRAM], v_dram_base + pos * num_tiles * 8,
-                dim, hidden_size)
+                npu._vrf[MEM_DRAM], layout.position_address(v_dram_base, pos),
+                dim, hidden_size, layout.tile_stride)
             _check_tensor("Round 1 K storage", k_actual, golden['K'][pos],
                           0.05, f"K[pos={pos}]")
             _check_tensor("Round 1 V storage", v_actual, golden['V'][pos],
@@ -594,14 +586,19 @@ def _instrument_boundaries(dim, hidden_size, seq_len, proj_base, stride, num_til
     """Build OpBoundary list matching current firmware DRAM layout.
     Output boundaries are diagnostic; K/V storage is checked separately so
     either baseline DRAM or optimized VRF-cache firmware is supported."""
+    layout = bert_dram_layout(
+        dim, hidden_size, seq_len,
+        version=_layout_version_for_shape(dim, hidden_size))
     nt = num_tiles
     boundaries = [
-        OpBoundary('save_res', 0x700, nt, stride=8),
+        OpBoundary('save_res', layout.save_res_base, nt,
+                   stride=layout.tile_stride),
     ]
     for pos in range(seq_len):
-        out_base = 0x800 + pos * nt * 8
+        out_base = layout.position_address(layout.save_out_base, pos)
         label = f'out_p{pos}' if seq_len > 1 else 'out'
-        boundaries.append(OpBoundary(label, out_base, nt, stride=8))
+        boundaries.append(OpBoundary(
+            label, out_base, nt, stride=layout.tile_stride))
     return boundaries
 
 
@@ -660,6 +657,7 @@ def _firmware_is_single_tile_only(dim, hidden_size) -> bool:
     (4, 4, 2, 8, 6, 64, 42),
     (4, 4, 2, 4, 2, 64, 42),   # dim4-h4: single-tile, heads_per_tile=2
     (4, 4, 2, 4, 6, 64, 42),   # dim4-h4-seq6
+    (16, 16, 1, 16, 16, 128, 42),  # packed-v2 large baseline
 ], ids=[
     "dim2-lanes2-head2-h4-seq2",
     "dim2-lanes2-head2-h4-seq6",
@@ -668,6 +666,7 @@ def _firmware_is_single_tile_only(dim, hidden_size) -> bool:
     "dim4-lanes4-head2-h8-seq6",
     "dim4-lanes4-head2-h4-seq2",
     "dim4-lanes4-head2-h4-seq6",
+    "dim16-lanes16-head1-h16-seq16",
 ])
 def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
                              vrf_depth, seed, request):
@@ -688,6 +687,9 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
     head_size = hidden_size // num_head
     num_tiles = hidden_size // dim
     last_pos = seq_len - 1
+    layout_version = _layout_version_for_shape(dim, hidden_size)
+    layout = bert_dram_layout(
+        dim, hidden_size, seq_len, version=layout_version)
 
     print(f"\n  Config: dim={dim}, lanes={lanes}, num_head={num_head}, "
           f"hidden_size={hidden_size}, head_size={head_size}, "
@@ -699,7 +701,8 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
     print("\n  Round 0: FP16 golden reference...")
     golden, params, sim_out_ref_arr, ln_offsets = _generate_golden(
         hidden_size=hidden_size, num_head=num_head, head_size=head_size,
-        seq_len=seq_len, native_dim=dim, seed=seed)
+        seq_len=seq_len, native_dim=dim, seed=seed,
+        layout_version=layout_version)
 
     sim_out_refs = np.asarray(sim_out_ref_arr).reshape(seq_len, -1)[:, :hidden_size]
     sim_out_ref = sim_out_refs[last_pos]
@@ -720,9 +723,9 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
     npu._vrf[MEM_DRAM][0:len(X_input)] = X_input
     print(f"  Input X (pos 0)[:4]: {X_input[:4].round(4)}")
 
-    _proj_base = hidden_size * seq_len + 4
-    _mat_size = hidden_size * hidden_size
-    _stride = _mat_size + hidden_size
+    _proj_base = layout.projection_base
+    _mat_size = layout.matrix_size
+    _stride = layout.projection_stride
 
     proj_layout = [
         ('Q', _proj_base, _proj_base + _mat_size),
@@ -755,15 +758,16 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
         num_tiles = hidden_size // dim
         for tr in range(num_tiles):
             chunk = src_vec[tr*dim:(tr+1)*dim]
-            npu._vrf[MEM_DRAM][dram_dst + tr * 8: dram_dst + tr * 8 + dim] = chunk
+            start = dram_dst + tr * layout.tile_stride
+            npu._vrf[MEM_DRAM][start:start + dim] = chunk
     _load_ln_tiled(ln_dst['ln1_gamma'], params['LayerNorm']['W'][0].astype(np.float32).flatten(), dim, hidden_size)
     _load_ln_tiled(ln_dst['ln1_beta'], params['LayerNorm']['b'][0].astype(np.float32).flatten(), dim, hidden_size)
     _load_ln_tiled(ln_dst['ln2_gamma'], params['LayerNorm']['W'][1].astype(np.float32).flatten(), dim, hidden_size)
     _load_ln_tiled(ln_dst['ln2_beta'], params['LayerNorm']['b'][1].astype(np.float32).flatten(), dim, hidden_size)
 
-    # Load unit vectors into DRAM at UNIT_VEC_BASE (0x900) for V.T re-transpose
+    # Load unit vectors into the layout-defined region for V.T re-transpose.
     # For NATIVE_DIM=d, we need d unit vectors e_j (j=0..d-1), each of length d
-    UNIT_VEC_BASE = 0x900
+    UNIT_VEC_BASE = layout.unit_vec_base
     for j in range(dim):
         e_j = np.zeros(dim, dtype=np.float32)
         e_j[j] = 1.0
@@ -780,7 +784,8 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
     if want_instr:
         boundaries = _instrument_boundaries(dim, hidden_size, seq_len,
                                             _proj_base, _stride, num_tiles)
-        instr = NpuInstrumentor(npu, boundaries, capture_dram_range=(0, 0x1000))
+        instr = NpuInstrumentor(
+            npu, boundaries, capture_dram_range=(0, layout.end_address))
         wrap_for_instr = instr
     else:
         wrap_for_instr = npu
@@ -789,7 +794,7 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
     cpu = MiniRV64()
     cpu.set_mmio_device(rec)
     cpu.load_elf(str(elf))
-    cpu.run(cycles=80000)
+    cpu.run(cycles=max(80_000, 2_000 * seq_len * seq_len * num_tiles))
     trace = rec.inst_trace
     print(f"  Instructions executed: {len(trace)}")
 
@@ -849,7 +854,7 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len,
     if HAS_HDL:
         print("\n  Round 2: HDL sequential replay (multi-tile)...")
         emu_dram = npu._vrf[MEM_DRAM].copy()
-        max_dram = min(2048, len(emu_dram))
+        max_dram = min(max(2048, layout.end_address), len(emu_dram))
 
         top = _build_top(dim, lanes, dram_depth=max_dram, vrf_depth=vrf_depth)
         sim = Simulator(top)

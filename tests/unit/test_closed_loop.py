@@ -31,10 +31,40 @@ def test_all_builtin_goals_validate():
         "rtl-cycle-optimization",
         "rtl-dram-optimization",
         "rtl-dram-exploration",
+        "rtl-cycle-optimization-large",
     ):
         loaded = closed_loop.load_config(goal)
         assert loaded["schema_version"] == 1
         assert loaded["name"] == goal
+
+
+def test_large_rtl_goal_uses_packed_dim16_contract():
+    config = closed_loop.load_config("rtl-cycle-optimization-large")
+
+    assert config["target"]["layout"] == "packed-v2"
+    assert config["target"]["hardware"] == {
+        "dim": 16, "hidden": 16, "num_head": 1,
+    }
+    assert config["probe"]["scoring_sequence_length"] == 16
+    assert config["probe"]["workload_manifest"].endswith(
+        "bert-dim16-h16-seq16.yaml"
+    )
+    assert config["probe"]["cycle_model"]["profile"].endswith(
+        "jimu-rtl-dim16.yaml"
+    )
+
+
+def test_invalid_or_multihead_wide_packed_layout_is_rejected():
+    config = closed_loop.load_config("rtl-cycle-optimization-large")
+    invalid = copy.deepcopy(config)
+    invalid["target"]["layout"] = "unknown-layout"
+    with pytest.raises(closed_loop.ConfigError, match="target.layout"):
+        closed_loop.validate_config(invalid)
+
+    multihead = copy.deepcopy(config)
+    multihead["target"]["hardware"]["num_head"] = 2
+    with pytest.raises(closed_loop.ConfigError, match="num_head=1"):
+        closed_loop.validate_config(multihead)
 
 
 @pytest.mark.parametrize(

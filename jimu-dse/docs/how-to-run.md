@@ -94,7 +94,7 @@ against the repository root and may not escape it.
 | Section | Fields |
 |---|---|
 | root | `schema_version`, `name`, `description` |
-| `target` | `firmware`, `baseline`, `allowed_files`, exact `hardware` values, `sequence_lengths` |
+| `target` | `firmware`, `baseline`, `allowed_files`, exact `hardware` values, `sequence_lengths`, optional BERT `layout` (`legacy-v1` default or `packed-v2`) |
 | `agent` | `backend` (`pi`/`opencode`), `model`, `timeout_seconds` (`0` disables the Agent hard timeout), `context_files` |
 | `prompt` | `template`, `goal`, `constraints`, `self_verify` |
 | `skills` | ordered `{name, path}` entries |
@@ -305,6 +305,8 @@ The profile and RTL are outside the agent's allowed files.
 1. Copy an existing directory under `jimu-dse/goals/`.
 2. Change `name`, description, target hardware, prompt, ordered skills, gates,
    score weights, and loop thresholds.
+   Use `target.layout: packed-v2` for shapes that need dynamically allocated,
+   non-overlapping BERT workspaces; omitted layout retains historical addresses.
 3. Ensure every referenced path exists and all weights sum to `1.0`.
 4. Run `validate-config`, then inspect `render-prompt`.
 5. Start with `JIMU_MAX_ITER=1` and review the generated report before a longer run.

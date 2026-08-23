@@ -1,0 +1,146 @@
+schema_version: 1
+name: rtl-cycle-optimization-large
+description: Minimize Verilator RTL makespan for the packed dim16/hidden16/seq16 BERT baseline.
+target:
+  firmware: firmware/bert/bert_layer.c
+  baseline: jimu-dse/baseline/bert_layer.c
+  allowed_files: [firmware/bert/bert_layer.c]
+  hardware: {dim: 16, hidden: 16, num_head: 1}
+  sequence_lengths: [16]
+  layout: packed-v2
+agent:
+  backend: opencode
+  model: opencode/big-pickle
+  timeout_seconds: 1800
+  work_budget:
+    max_primary_hypotheses: 1
+    analysis_deadline_seconds: 600
+    edit_deadline_seconds: 900
+    return_deadline_seconds: 1500
+  context_files:
+    - firmware/bert/bert_layer.c
+    - emulator/bert_layout.py
+    - jimu-dse/timing/jimu-rtl-dim16.yaml
+    - docs/rtl-bert-large-baseline.md
+prompt:
+  goal: Minimize RTL NPU makespan for NATIVE_DIM=16, hidden=16, seq_len=16, and one attention head.
+  constraints:
+    - Only modify the configured firmware target.
+    - Preserve numerical correctness for the packed-v2 dim16 case and the existing legacy dim4 regression.
+    - Preserve the public firmware entry points and the compile-time DRAM layout macros; do not hard-code packed-v2 addresses in optimization logic.
+    - Do not change the RTL, profiles, layout calculator, workload manifest, emulator, tests, artifacts, metrics, or build system.
+    - Optimize rtl_predicted_npu_cycles rather than Python wall-clock time, instruction count, DRAM traffic, or summed waits.
+    - Treat this profile as a dimension-extrapolated command/control timing model, not calibrated dim16 silicon timing.
+    - Implement at most one primary hypothesis per iteration and justify it from causal schedule evidence.
+    - This loop is non-interactive; do not ask for confirmation or offer options instead of editing.
+  self_verify: Run at most one targeted quick check, then return control; the closed-loop controller owns complete gates and official RTL scoring.
+  template: |
+    You are optimizing {target_file} against a synthesizable Verilator RTL
+    command/control timing core for the packed dim16 BERT workload.
+    Goal: {goal_name} — {goal_description}
+    Iteration: {iteration}
+    Hardware: {hardware}
+
+    Current RTL metrics:
+    {metrics}
+
+    The RTL has a finite ROB, independent load/store/MVU/vector/control
+    controllers, a shared DRAM bus, a 128-bit semantic scoreboard, banked SRAM
+    ports, and chain fences. DRAM and independent compute may overlap.
+
+    Scored cross-layer and timing evidence:
+    {graph_context}
+
+    Select one transformation on or near the causal completion path. Keep all
+    packed-v2 addresses supplied by build macros and preserve the legacy build.
+
+    Constraints:
+    {constraints}
+
+    Apply these skills in order:
+    {skills}
+
+    Acceptance gates:
+    {gate_commands}
+    Self verification: {self_verify}
+skills:
+  - name: rtl-dataflow
+    path: jimu-dse/docs/skills/isa/rtl-dataflow.md
+  - name: dataflow-optimize
+    path: jimu-dse/docs/skills/isa/dataflow-optimize.md
+  - name: self-verify
+    path: jimu-dse/docs/skills/isa/self-verify.md
+probe:
+  workload_manifest: jimu-dse/workloads/bert-dim16-h16-seq16.yaml
+  timed_device:
+    profile: jimu-dse/timing/npu-timed-dim16.yaml
+  metrics:
+    - rtl_predicted_npu_cycles
+    - rtl_completion_makespan_cycles
+    - rtl_idle_cycles
+    - rtl_retirement_tail_cycles
+    - serial_command_cycles
+    - overlap_saved_cycles
+    - net_parallelism_savings_cycles
+    - gross_overlap_cycles
+    - scheduler_idle_hole_cycles
+    - memory_compute_overlap_cycles
+    - memory_compute_overlap_ratio
+    - max_concurrent_ops
+    - dram_bus_utilization
+    - load_utilization
+    - store_utilization
+    - mvu_utilization
+    - vector_utilization
+    - control_utilization
+    - rtl_counter_dependency_stall_cycles
+    - rtl_counter_dram_stall_cycles
+    - rtl_counter_bank_stall_cycles
+    - rtl_counter_barrier_stall_cycles
+    - rtl_counter_frontend_full_stall_cycles
+    - dram_elements
+    - functional_container_bytes
+    - rtl_payload_bytes
+    - instr_count
+    - mv_mul_count
+    - mat_rd_ops
+    - timed_wall_cycles
+    - timed_fifo_full_stall_cycles
+    - timed_scoreboard_stall_cycles
+    - timed_dram_stall_cycles
+    - timed_frontend_overflow_count
+  scoring_sequence_length: 16
+  cycle_model:
+    profile: jimu-dse/timing/jimu-rtl-dim16.yaml
+  cycle_limit: 1000000
+  dag: {enabled: false}
+acceptance:
+  gates:
+    - {name: allowed-files, type: allowed_files}
+    - {name: firmware-build, type: build}
+    - {name: probe-complete, type: probe}
+    - name: dim16-numerical-correctness
+      type: command
+      command: python3 -m pytest tests/integration/test_bert_e2e.py -k "dim16 and h16" --no-header -q
+      timeout_seconds: 1200
+      success_codes: [0]
+    - name: legacy-dim4-regression
+      type: command
+      command: python3 -m pytest tests/integration/test_bert_e2e.py -k "dim4 and h4 and seq6" --no-header -q
+      timeout_seconds: 600
+      success_codes: [0]
+  score:
+    - {metric: rtl_predicted_npu_cycles, direction: minimize, weight: 1.0}
+loop:
+  mode: goal_driven
+  max_iterations: 10
+  min_score_delta: 0.001
+  max_no_improvement: 10
+  target_score: 0.10
+  evaluate_timeout_candidate: true
+artifacts:
+  save_candidates: true
+  save_diffs: true
+  save_prompts: true
+  save_probes: true
+  save_graphs: true

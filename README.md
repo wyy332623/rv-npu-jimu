@@ -95,6 +95,16 @@ bash jimu-dse/scripts/npu_closed_loop.sh \
   --goal rtl-cycle-optimization --agent opencode
 ```
 
+For a workload with an order-of-magnitude larger input tensor, use the packed
+`NATIVE_DIM=16`, `hidden=16`, `seq_len=16`, single-head goal:
+
+```bash
+python3 jimu-dse/scripts/closed_loop.py validate-config \
+  --goal rtl-cycle-optimization-large
+```
+
+See `docs/rtl-bert-large-baseline.md` for its layout and calibration boundary.
+
 The RTL is a command/control timing model; functional and numerical equivalence
 continues to come from the existing emulator.  See
 `docs/rtl-timing-simulator.md` for the architecture, open-source design study,
@@ -149,6 +159,7 @@ jimu-dse/        Closed-loop firmware optimization pipeline
 | `docs/unified-firmware-optimization.md` | Generic firmware timing, tensor semantics, graphs, and agent evidence |
 | `docs/rtl-timing-simulator.md` | RTL architecture, design sources, performance counters, and optimization space |
 | `docs/rtl-bert-baseline.md` | Reproducible dim4/seq6 RTL baseline and ranked data-flow hypotheses |
+| `docs/rtl-bert-large-baseline.md` | Packed dim16/hidden16/seq16 optimization baseline and timing limits |
 
 ## License
 

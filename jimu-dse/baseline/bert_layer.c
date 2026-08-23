@@ -55,32 +55,24 @@
 #define REG_ITERATIONS_ADDR 3
 #define REG_PRECISION_MODE  20
 
-/* DRAM layout for saved Q/K/V per position.
- * With multi-tile, each tile row is NATIVE_DIM elements = 8 addresses
- * (since DRAM stores fp16, 8 addresses = 8 elements).
+/* DRAM layout for saved Q/K/V per position.  All addresses and the tile
+ * stride are supplied by the versioned host-side layout calculator.
  *
- * Layout:
- *   0x200 + pos * num_tiles * 8 + tr * 8 : Q[pos] tile row tr
- *   0x300 + pos * num_tiles * 8 + tr * 8 : K[pos] tile row tr
- *   0x400 + pos * num_tiles * 8 + tr * 8 : V[pos] tile row tr
- *   0x500                                    : scratch for LN and FFN
- *   0x600                                    : SCRATCH_Z
- *   0x620                                    : SCRATCH_LN1
- *   0x640                                    : SCRATCH_GELU
- *   0x700                                    : save_res
- *   0x800                                    : save_out
+ * Position/tile address:
+ *   BASE + pos * num_tiles * TILE_STRIDE + tr * TILE_STRIDE
  */
-#define SAVE_Q_BASE      0x200
-#define SAVE_K_BASE      0x300
-#define SAVE_V_BASE      0x400
-#define SCRATCH_ADDR     0x500
-#define SCRATCH_Z        0x600
-#define SCRATCH_LN1      0x620
-#define SCRATCH_GELU     0x640
-#define SAVE_RES_BASE    0x700
-#define SAVE_OUT_BASE    0x800
-#define SO_SCRATCH       0x580  /* temp storage for SO during residual add */
-#define UNIT_VEC_BASE    0x900  /* identity-matrix rows for V.T re-transpose */
+#define TILE_STRIDE      _TILE_STRIDE
+#define SAVE_Q_BASE      _SAVE_Q_BASE
+#define SAVE_K_BASE      _SAVE_K_BASE
+#define SAVE_V_BASE      _SAVE_V_BASE
+#define SCRATCH_ADDR     _ATTENTION_SCRATCH
+#define SCRATCH_Z        _SCRATCH_Z
+#define SCRATCH_LN1      _SCRATCH_LN1
+#define SCRATCH_GELU     _SCRATCH_GELU
+#define SAVE_RES_BASE    _SAVE_RES_BASE
+#define SAVE_OUT_BASE    _SAVE_OUT_BASE
+#define SO_SCRATCH       _SO_SCRATCH
+#define UNIT_VEC_BASE    _UNIT_VEC_BASE
 
 
 /* ── m_init_bias_accumulators ─────────────────────────────────────
@@ -196,7 +188,7 @@ static void save_row_tiles(uint32_t num_tiles, uint32_t dram_base,
     for (tr = 0; tr < num_tiles; tr++) {
         uint32_t vrf = (tr == 0) ? vrf_first : vrf_second;
         SEND_SI(OP_V_RD, vrf, 0);
-        SEND_LO(OP_V_WR_DRAM, dram_base + tr * 8);
+        SEND_LO(OP_V_WR_DRAM, dram_base + tr * TILE_STRIDE);
     }
 }
 
@@ -207,7 +199,7 @@ static void load_and_add_row_tiles(uint32_t num_tiles, uint32_t dram_base,
     for (tr = 0; tr < num_tiles; tr++) {
         uint32_t vrf = (tr == 0) ? vrf_first : vrf_second;
         SEND_SI(OP_V_RD, vrf, 0);
-        SEND_LO(OP_V_RD_DRAM, dram_base + tr * 8);
+        SEND_LO(OP_V_RD_DRAM, dram_base + tr * TILE_STRIDE);
         SEND_SI(OP_VV_ADD, 0, 0);
         SEND_SI(OP_V_WR, vrf, 0);
     }
@@ -225,10 +217,10 @@ static void apply_layernorm(uint32_t num_tiles,
                              uint32_t scratch_addr)
 {
     uint32_t tr;
-    uint32_t ln_scratch = scratch_addr + num_tiles * 8; /* extra scratch for tile 0 */
+    uint32_t ln_scratch = scratch_addr + num_tiles * TILE_STRIDE;
     for (tr = 0; tr < num_tiles; tr++) {
         uint32_t vrf = (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1;
-        uint32_t stride = 8;
+        uint32_t stride = TILE_STRIDE;
 
         /* Save tile row from VRF to scratch DRAM */
         SEND_SI(OP_V_RD, vrf, 0);
@@ -267,7 +259,7 @@ static void apply_layernorm(uint32_t num_tiles,
  *
  * Compute K = Wk × X[pos] + bk for ALL positions and save to DRAM.
  * Each position's K vector occupies num_tiles * NATIVE_DIM elements.
- * Saved at DRAM[SAVE_K_BASE + pos * num_tiles * 8 + tr * 8].
+ * Saved with the versioned position/tile stride at SAVE_K_BASE.
  */
 static void compute_k_all_positions(
     uint32_t seq_len, uint32_t hidden_size, uint32_t num_tiles,
@@ -277,7 +269,7 @@ static void compute_k_all_positions(
     for (pos = 0; pos < seq_len; pos++) {
         uint32_t x_base = pos * hidden_size;
         mvm_tiled_q(k_base, x_base, num_tiles, k_bias);
-        save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * 8,
+        save_row_tiles(num_tiles, SAVE_K_BASE + pos * num_tiles * TILE_STRIDE,
                         MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
     }
 }
@@ -285,7 +277,7 @@ static void compute_k_all_positions(
 /* ── compute_v_all_positions ─────────────────────────────────────
  *
  * Compute V = Wv × X[pos] + bv for ALL positions and save to DRAM.
- * Saved at DRAM[SAVE_V_BASE + pos * num_tiles * 8 + tr * 8].
+ * Saved with the versioned position/tile stride at SAVE_V_BASE.
  */
 static void compute_v_all_positions(
     uint32_t seq_len, uint32_t hidden_size, uint32_t num_tiles,
@@ -295,7 +287,7 @@ static void compute_v_all_positions(
     for (pos = 0; pos < seq_len; pos++) {
         uint32_t x_base = pos * hidden_size;
         mvm_tiled_q(v_base, x_base, num_tiles, v_bias);
-        save_row_tiles(num_tiles, SAVE_V_BASE + pos * num_tiles * 8,
+        save_row_tiles(num_tiles, SAVE_V_BASE + pos * num_tiles * TILE_STRIDE,
                         MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
     }
 }
@@ -325,7 +317,7 @@ static void dot_product_attention(
 
     /* Compute Q for this position and save */
     mvm_tiled_q(q_base, x_base, num_tiles, q_bias);
-    save_row_tiles(num_tiles, SAVE_Q_BASE + pos * num_tiles * 8,
+    save_row_tiles(num_tiles, SAVE_Q_BASE + pos * num_tiles * TILE_STRIDE,
                     MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
 
     /* Zero the context accumulator per row-tile */
@@ -343,7 +335,8 @@ static void dot_product_attention(
             /* ── Build K.T MRF tile for head h ── */
             for (p = 0; p < _SEQ_LEN; p++) {
                 SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-                SEND_LO(OP_V_RD_DRAM, SAVE_K_BASE + p * num_tiles * 8 + tr * 8);
+                SEND_LO(OP_V_RD_DRAM,
+                    SAVE_K_BASE + p * num_tiles * TILE_STRIDE + tr * TILE_STRIDE);
                 SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
             }
             /* Zero-pad remaining rows to NATIVE_DIM */
@@ -356,7 +349,8 @@ static void dot_product_attention(
 
             /* ── Score = K.T @ Q_h → [seq_len] ── */
             SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-            SEND_LO(OP_V_RD_DRAM, SAVE_Q_BASE + pos * num_tiles * 8 + tr * 8);
+            SEND_LO(OP_V_RD_DRAM,
+                SAVE_Q_BASE + pos * num_tiles * TILE_STRIDE + tr * TILE_STRIDE);
             SEND_SI(OP_V_WR, MEM_MVM_INITIAL_VRF, 0);
             SEND_SI(OP_V_RD, MEM_MVM_INITIAL_VRF, 0);
             SEND_SI(OP_MV_MUL, 0, 0);
@@ -373,7 +367,8 @@ static void dot_product_attention(
              * Step 1: Build V position-major into MRF */
             for (p = 0; p < _SEQ_LEN; p++) {
                 SEND_SI(OP_S_WR, REG_READ_VECTOR_MASK, 0xFF);
-                SEND_LO(OP_V_RD_DRAM, SAVE_V_BASE + p * num_tiles * 8 + tr * 8);
+                SEND_LO(OP_V_RD_DRAM,
+                    SAVE_V_BASE + p * num_tiles * TILE_STRIDE + tr * TILE_STRIDE);
                 SEND_SI(OP_V_WR, MEM_VEC_TO_MAT_ROW, 0);
             }
             for (pad = _SEQ_LEN; pad < NATIVE_DIM; pad++) {
@@ -495,7 +490,7 @@ void bert_encoder_layer(
                 SEND_LO(OP_V_RD_DRAM, x_base + tr * NATIVE_DIM);
                 SEND_SI(OP_V_WR, (tr == 0) ? MEM_ADDSUB_VRF_0 : MEM_ADDSUB_VRF_1, 0);
             }
-            save_row_tiles(num_tiles, SAVE_RES_BASE + _pos * num_tiles * 8,
+            save_row_tiles(num_tiles, SAVE_RES_BASE + _pos * num_tiles * TILE_STRIDE,
                             MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
             /* Residual 1: reload SO from SO_SCRATCH, add X from VRF */
             for (tr = 0; tr < num_tiles; tr++) {
@@ -532,10 +527,10 @@ void bert_encoder_layer(
             /* ── FFN output + second residual + LayerNorm ──────── */
             mvm_tiled_q(_PROJ_BASE + 5 * _STRIDE, SCRATCH_GELU, num_tiles,
                         _PROJ_BASE + 5 * _STRIDE + _MAT_SIZE);
-            load_and_add_row_tiles(num_tiles, SAVE_RES_BASE + _pos * num_tiles * 8,
+            load_and_add_row_tiles(num_tiles, SAVE_RES_BASE + _pos * num_tiles * TILE_STRIDE,
                                     MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
             apply_layernorm(num_tiles, _LN2_GAMMA, _LN2_BETA, _SCRATCH);
-            save_row_tiles(num_tiles, SAVE_OUT_BASE + _pos * num_tiles * 8,
+            save_row_tiles(num_tiles, SAVE_OUT_BASE + _pos * num_tiles * TILE_STRIDE,
                             MEM_ADDSUB_VRF_0, MEM_ADDSUB_VRF_1);
         }
 

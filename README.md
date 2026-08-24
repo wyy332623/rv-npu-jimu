@@ -113,14 +113,17 @@ optimization space, artifacts, and fidelity limits.
 ## Running Tests
 
 ```bash
-# C kernel tests only (fast, 15 tests)
-python3 -m pytest tests/unit/ -m c_kernel -v
+# Unit tests, including schedulers, timing adapters, RTL replay, and goal validation
+python3 -m pytest tests/unit/ -v
 
 # Integration: BERT E2E (parameterized)
 python3 -m pytest tests/integration/ -v
 
-# Diagnostic: dispatch audit
-python3 -m pytest tests/diagnostic/ -k static -v
+# RTL-focused regression subset
+make rtl-test
+
+# Complete suite
+python3 -m pytest tests/ -v
 ```
 
 ## Project Structure

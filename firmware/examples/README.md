@@ -128,37 +128,27 @@ Generates def-use DAG diagrams showing tensor flow through the chain
 examples.  Produces both event-level DAG (every instruction as a node)
 and a collapsed micro-op DAG (load-compute-store groups).
 
-Running the script replays the single-chain and SiLU-chain instruction
-sequences through the emulator's `EventTracer` and writes DOT files
-that can be rendered with Graphviz:
+Running the script replays the example instruction sequences through the
+emulator's `EventTracer` and writes event-level and collapsed micro-op DOT
+files. If Graphviz is installed, the script also renders PNG files:
 
 ```bash
-PYTHONPATH=. python3 firmware/examples/chain_dag.py --output /tmp/chain_dag/
-# Render DOT to PNG:
-dot -Tpng /tmp/chain_dag/chain_example_events.dot -o chain_events.png
-dot -Tpng /tmp/chain_dag/chain_example_microops.dot -o chain_microops.png
-dot -Tpng /tmp/chain_dag/silu_chain_microops.dot -o silu_chain_microops.png
-dot -Tpng /tmp/chain_dag/silu_chain_events.dot -o silu_chain_events.png
-dot -Tpng /tmp/chain_dag/multi_chain_events.dot -o multi_chain_events.png
-dot -Tpng /tmp/chain_dag/multi_chain_microops.dot -o multi_chain_microops.png
-dot -Tpng /tmp/chain_dag/softmax_chain_events.dot -o softmax_chain_events.png
-dot -Tpng /tmp/chain_dag/softmax_chain_microops.dot -o softmax_chain_microops.png
+PYTHONPATH=. python3 firmware/examples/chain_dag.py \
+  --output firmware/examples/_dag/
 ```
 
 ### Generated DAG Diagrams
 
-Pre-rendered diagrams are available in `firmware/examples/_dag/`:
+Generated diagrams are local build artifacts and are not committed. The command
+above creates `firmware/examples/_dag/`, which is ignored by Git. It emits the
+following DOT files and, when Graphviz is available, matching PNG files:
 
-| Diagram | Dot File | Description |
-|---------|----------|-------------|
-| ![single-chain events](_dag/chain_example_events.png) | `chain_example_events.dot` | Event-level DAG of `01_single_chain.c` — every instruction as a node, edges show data flow (MRF → MV_MUL, pipe → MV_MUL, pipe → V_WR) |
-| ![single-chain micro-ops](_dag/chain_example_microops.png) | `chain_example_microops.dot` | Collapsed micro-op DAG — MAT_LOAD → MV_MUL → DRAM_STORE groups |
-| ![multi-chain events](_dag/multi_chain_events.png) | `multi_chain_events.dot` | Two-chain sequence from `02_multi_chain.c` — Chain 1 (MVM) followed by Chain 2 (bias add) |
-| ![multi-chain micro-ops](_dag/multi_chain_microops.png) | `multi_chain_microops.dot` | Micro-op DAG across two chains — VRF[1][0] data dependency bridges the INST_ISSUE boundary |
-| ![silu chain events](_dag/silu_chain_events.png) | `silu_chain_events.dot` | Event-level DAG of the SiLU × up → W_down → residual chain — 24 instructions with full def-use edges |
-| ![silu chain micro-ops](_dag/silu_chain_microops.png) | `silu_chain_microops.dot` | Collapsed micro-op DAG of the same chain — 21 instructions collapsed to 9 micro-ops |
-| ![softmax chain events](_dag/softmax_chain_events.png) | `softmax_chain_events.dot` | Event-level DAG of `03_softmax_chain.c` — Chain 1: Q×K.T → scores → softmax → attn. Chain 2: attn × V → context. Chain 3: DRAM write. |
-| ![softmax chain micro-ops](_dag/softmax_chain_microops.png) | `softmax_chain_microops.dot` | Micro-op DAG — SOFTMAX is a standalone node between MV_MUL(K.T×Q) and MV_MUL(V×attn). MRF holds K.T then V. |
+| File prefix | Description |
+|-------------|-------------|
+| `chain_example_events` / `chain_example_microops` | Single-chain MRF → MV_MUL → DRAM data flow |
+| `multi_chain_events` / `multi_chain_microops` | MVM followed by bias-add across an `INST_ISSUE` boundary |
+| `silu_chain_events` / `silu_chain_microops` | SiLU × up → down projection → residual chain |
+| `softmax_chain_events` / `softmax_chain_microops` | Q×K.T → softmax → V×attention → DRAM flow |
 
 The event-level DAG shows MV_MUL with two incoming edges — one `via MRF`
 (the explicit operand from the preceding `M_RD_DRAM`) and one `via pipe`

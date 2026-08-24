@@ -216,12 +216,12 @@ The Python emulator implements both instruction issuing modes:
 
 ### Differences from Hardware Model
 
-The Python emulator is single-threaded and non-pipelined. Each instruction
-runs to completion before the next starts. There is no cycle counter,
-no hazard detection, and no parallel dispatch. The chain mode exists for
-correctness verification only — in a hardware implementation, instructions
-within a chain would target different functional units and execute in
-parallel (see specification.md §3.3 for details).
+The functional Python emulator (`NpuDeviceMini`) is single-threaded and
+non-pipelined. Each instruction runs to completion before the next starts.
+There is no cycle counter, hazard detection, or parallel dispatch in that
+model. Chain mode exists there for correctness verification only. Timing-aware
+execution is provided separately by `NpuDeviceTimed` and the Verilator RTL
+backend described below (see specification.md §3.3 for chain semantics).
 
 ## Implementation: Python vs C
 
@@ -229,6 +229,9 @@ parallel (see specification.md §3.3 for details).
 |-----------|----------|-------|
 | **RISC-V ISS** (`iss/mini_rv64.py`) | Python | ~1500 lines. Runs the RV64IM ELF binary one instruction per `step()`. |
 | **NPU device model** (`emulator/npu_device_mini.py`) | Python | Functional emulator. Handles MMIO, register files, instruction decode, DRAM transfers. |
+| **Timed device** (`emulator/npu_device_timed.py`) | Python | Lock-step FIFO, scoreboard, execution-unit, and DRAM timing around the functional emulator. |
+| **RTL timing core** (`rtl/jimu_npu_timing_core.sv`) | SystemVerilog | Finite ROB, independent controllers, semantic dependencies, DRAM serialization, and bank conflicts. |
+| **RTL replay adapter** (`emulator/npu_rtl_sim.py`) | Python + C++ | Encodes trace resources and drives the Verilator harness in `sim/jimu_rtl_harness.cpp`. |
 | **Instruction decoder** | Python | Decodes 32-bit instructions and dispatches to the appropriate functional unit method. |
 | **TMM** (VMM + MMM) | Python | DRAM ↔ VRF/MRF transfers with address auto-increment logic. |
 | **MVU** | Python (control) + C (arithmetic) | Python sets up operands; calls `libnpukernels.so::mv_mul()` via ctypes. |
@@ -245,9 +248,16 @@ parallel (see specification.md §3.3 for details).
 
 ## Timing Model
 
-The Python emulator (`NpuDeviceMini`) is a **functional model without
-timing**. Each instruction written to `INST_FIFO` is executed synchronously
-to completion before the next one starts:
+The project has three complementary execution layers:
+
+| Layer | Authority | Main use |
+|-------|-----------|----------|
+| `NpuDeviceMini` | Numerical values and instruction semantics | Functional correctness, DRAM accounting, and trace/DAG generation |
+| `NpuDeviceTimed` | Firmware-visible FIFO/status timing | Busy/done polling, queue pressure, scoreboarding, and resource contention |
+| Verilator RTL timing core | RTL command/control schedule | ROB dependencies, controller overlap, SRAM-bank conflicts, fences, and cycle counters |
+
+`NpuDeviceMini` itself remains a functional model without timing. Each
+instruction written to `INST_FIFO` executes synchronously before the next one:
 
 ```python
 def _push_instruction(self, inst):
@@ -256,23 +266,13 @@ def _push_instruction(self, inst):
     self._status = STATUS_DONE
 ```
 
-There is no cycle counter, no pipeline stage overlap, no parallel dispatch
-across functional units, and no contention modeling. The `tick()` method is
-a no-op. The comment at the top of the file states:
-
-> *"For cycle-accurate simulation, use sim.backend_verilator instead."*
-
-The emulator is suitable for:
-- **Functional correctness**: verifying firmware logic produces the right
-  numerical outputs
-- **DRAM traffic analysis**: counting total bytes read/written
-- **DAG analysis**: building dependency graphs from instruction traces
-
-It does **not** model:
-- Pipeline hazards or stalls
-- Performance (cycles, FLOPS, latency)
-- Parallelism between functional units
-- Timing-dependent bugs
+Its `tick()` method is a no-op, so timing conclusions must come from one of the
+timing layers. `NpuDeviceTimed` reuses the functional emulator as its retirement
+oracle while modeling firmware-visible progress. The RTL backend replays the
+same canonical command trace through a synthesizable scheduling core. The
+active RTL latency and initiation-interval parameters are first-pass,
+HDL-derived contracts rather than calibrated silicon measurements; see
+`docs/hdl-derived-timing-parameters.md` and `docs/rtl-timing-simulator.md`.
 
 ---
 

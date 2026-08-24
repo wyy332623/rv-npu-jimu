@@ -389,6 +389,40 @@ def _extract_output_from_emulator(npu, dim, hidden_size, pos=0):
     return _extract_tiled_from_dram(npu._vrf[MEM_DRAM], base, dim, hidden_size)
 
 
+def _check_materialized_qkv(npu, dim, hidden_size, seq_len, golden):
+    """Validate Q/K/V when the firmware intentionally stores them in DRAM.
+
+    Optimized candidates may keep these tensors in VRF.  The correctness
+    baseline stores all three at documented addresses, so check every position
+    there to localize projection regressions.
+    """
+    firmware = Path("firmware/bert/bert_layer.c").read_text()
+    materialized = {
+        "Q": ("SAVE_Q_BASE", "save_row_tiles(num_tiles, SAVE_Q_BASE", 0x200),
+        "K": ("SAVE_K_BASE", "save_row_tiles(num_tiles, SAVE_K_BASE", 0x300),
+        "V": ("SAVE_V_BASE", "save_row_tiles(num_tiles, SAVE_V_BASE", 0x400),
+    }
+    num_tiles = hidden_size // dim
+    for name, (define, store, base) in materialized.items():
+        if define not in firmware or store not in firmware:
+            continue
+        for pos in range(seq_len):
+            actual = _extract_tiled_from_dram(
+                npu._vrf[MEM_DRAM],
+                base + pos * num_tiles * 8,
+                dim,
+                hidden_size,
+            )
+            ref = golden[name][pos].flatten()[:hidden_size]
+            _check_tensor(
+                f"Round 1 intermediate pos={pos}",
+                actual,
+                ref,
+                0.05,
+                name,
+            )
+
+
 def _check_tensor(label, actual, ref, atol, name=""):
     """Compare two tensors, print diagnostics, return max_diff.
     Raises AssertionError if max_diff exceeds atol."""
@@ -495,12 +529,15 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
     Optional HDL rounds (R2, R3) run only if Amaranth is installed.
     """
     if not HAS_ISS:
-        pytest.skip("ISS (MiniRV64) not available — install pyelftools")
+        pytest.fail("ISS (MiniRV64) not available; install pyelftools")
 
     # Skip if firmware doesn't support this config
     if _firmware_is_single_tile_only(dim, hidden_size):
         num_tiles = hidden_size // dim
-        pytest.skip(f"Firmware is single-tile only (num_tiles={num_tiles} > 1 not supported)")
+        pytest.fail(
+            f"Firmware dropped required multi-tile support "
+            f"(num_tiles={num_tiles} > 1)"
+        )
 
     head_size = hidden_size // num_head
     num_tiles = hidden_size // dim
@@ -517,9 +554,7 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
         hidden_size=hidden_size, num_head=num_head, head_size=head_size,
         seq_len=seq_len, native_dim=dim)
 
-    sim_out_ref = sim_out_ref_arr
-    if sim_out_ref.ndim > 1:
-        sim_out_ref = sim_out_ref_arr[last_pos].flatten()[:hidden_size]
+    sim_out_ref = sim_out_ref_arr[last_pos].flatten()[:hidden_size]
     print(f"  Golden out[:4]:   {sim_out_ref[:4].round(4)}")
 
     # ── Round 1: Firmware on emulator ─────────────────────────
@@ -527,7 +562,7 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
 
     r, elf = _build_firmware(dim, seq_len, num_head, hidden_size)
     if r.returncode != 0 or not elf.exists():
-        pytest.skip(f"FW build failed (dim={dim}):\n{r.stderr[:300]}")
+        pytest.fail(f"FW build failed (dim={dim}):\n{r.stderr[:1000]}")
 
     npu = NpuDeviceMini(native_dim=dim)
     npu.set_hidden_size(hidden_size)
@@ -605,10 +640,29 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
     trace = rec.inst_trace
     print(f"  Instructions executed: {len(trace)}")
 
-    emu_out = _extract_output_from_emulator(npu, dim, hidden_size, pos=last_pos)
-    print(f"  Emulator out[:4]:  {emu_out[:4].round(4)}")
+    emu_outputs = []
+    for pos in range(seq_len):
+        emu_out_at_pos = _extract_output_from_emulator(
+            npu, dim, hidden_size, pos=pos
+        )
+        ref_at_pos = sim_out_ref_arr[pos].flatten()[:hidden_size]
+        print(
+            f"  Emulator out[pos={pos}][:4]: "
+            f"{emu_out_at_pos[:4].round(4)}"
+        )
+        _check_tensor(
+            f"Round 1 pos={pos}",
+            emu_out_at_pos,
+            ref_at_pos,
+            0.05,
+            "out",
+        )
+        emu_outputs.append(emu_out_at_pos)
+    emu_out = emu_outputs[last_pos]
 
-    _check_tensor("Round 1", emu_out, sim_out_ref, 0.05, "out")
+    _check_materialized_qkv(
+        npu, dim, hidden_size, seq_len, golden
+    )
 
     # ── Optional instrumentor diagnostics ──────────────────────
     if instr is not None:
@@ -699,4 +753,3 @@ def test_bert_e2e_multi_tile(dim, lanes, num_head, hidden_size, seq_len, vrf_dep
         print("  Round 3: skipped (install amaranth for HDL validation)")
 
     print(f"  \n  ✅ All rounds complete - output matches golden (firmware tile-MHA)")
-

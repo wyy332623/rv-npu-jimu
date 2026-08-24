@@ -1,72 +1,144 @@
 ---
 name: vrf-cache
-description: 将 K/V tensor 数据从 DRAM 往返重定向到片上 VRF cache
+version: 2.11.0
+description: 通过分阶段、可证明容量的 VRF 缓存和权重驻留调度降低 NPU DRAM 流量
 license: MIT
 ---
 
+## 活动 scratch 成员
+
+对于 `macro-dram-l1-transient-scratch-bank13`，只替换 contract 的
+`expected_dram_resources` 中仍然存在的 scratch 往返。contract 可以只包含
+softmax 或 LayerNorm，也可以同时包含两者。未列出的成员已经被前序优化消除，
+不得重新引入，也不得要求它再次产生流量变化。非零但数量不完整的成员仍视为
+未证明，不能实施。
+
 # VRF Cache 技能
 
-## 问题
+## DAG-PR6 使用规则
 
-固件通常会计算 K、V、Q、Z、SO 或 LayerNorm 输出等中间结果，通过存储宏/函数（如 `save_row_tiles()`、`SEND_LO(OP_V_WR_DRAM, ...)`）写入 DRAM，随后下游操作再通过 `V_RD_DRAM` 从 DRAM 读取。当目标 VRF 容量足够时，这种往返是不必要的。
+实施前必须检查 `allocation_proof.json`，并且只选择同时具备完整验证矩阵、
+跨配置证明和分配证明的宏。每轮只实施一个层级，严格遵守 L1 → L2 → L3。
+
+L2 可缓存重复读取且从不由固件写入的 bias、LayerNorm 参数、单位向量或输入位置值。
+保留每个值第一次强制 DRAM 读取，在第二次使用前写入证明指定的 VRF 区域，只替换
+该宏范围内的后续读取。成员数量会随 dim、hidden 和 seq 改变，源码必须使用符号化
+循环，不能照抄 seq6 的成员列表。
+
+当 L3 显示 `blocked-schedule-and-mrf-proof-required` 时禁止尝试权重驻留改造。
+
+目标是在不改变张量数值、运算顺序、支持维度和通用路径的前提下降低 DRAM
+流量。必须同时遵守 `common-constraints`、`dag-analyze` 和 `self-verify`。
+
+## 一次候选只提升一级
+
+先判断输入固件处于 L0、L1、L2 还是 L3，然后只实现最低的未完成级别并停止。
+每一级必须经过闭环独立验收后，下一次迭代才能继续。
+
+| 级别 | 转换 | 主要降低的流量 |
+|---|---|---|
+| L1 | 中间张量留在 VRF | `V_WR_DRAM`、`V_RD_DRAM` |
+| L2 | 循环不变量只预加载一次 | 重复 `V_RD_DRAM` |
+| L3 | 同一权重 tile 驻留并处理多个位置 | 重复 `M_RD_DRAM` |
 
 ## VRF 容量
 
-| VRF bank | Mem ID | 大小（元素） | 用途 |
-|----------|--------|--------------|------|
-| `MFU_INITIAL_VRF` | 6 | 4096 | 通用中间结果缓存（如 GELU） |
-| `ADDSUB_VRF_0` | 7 | 1024 | tile 行 0 累加器 |
-| `ADDSUB_VRF_1` | 8 | 4096 | tile 行 1 累加器和 X cache |
-| `ADDSUB_VRF_2` | 9 | 64 | 第二个 tile 行（多 tile） |
-| `MVM_INITIAL_VRF` | 5 | 20480 | MVM 输入向量 |
-| `MULTIPLY_VRF` | 1 | 64 | 临时 MVM 结果 |
+修改前必须以 `emulator/npu_device_mini.py::VRF_SIZES` 为准核对当前平台：
 
-通常选择 `MFU_INITIAL_VRF`（mem 6）作为 scratchpad，因为它具有较大的 4096 元素容量。
+| bank | ID | 元素数 | 默认用途 |
+|---|---:|---:|---|
+| `MEM_MULTIPLY_VRF` | 1 | 64 | 临时乘法结果 |
+| `MEM_MVM_INITIAL_VRF` | 5 | 20480 | MVU 输入 |
+| `MEM_MFU_INITIAL_VRF` | 6 | 4096 | 长生命周期缓存 |
+| `MEM_ADDSUB_VRF_0` | 7 | 1024 | 算术输入/输出 |
+| `MEM_ADDSUB_VRF_1` | 8 | 4096 | 算术输入/输出 |
+| `MEM_ADDSUB_VRF_2` | 9 | 64 | 额外 tile 累加器 |
+| `MEM_MVM_ACC_VRF` | 13 | 256 | tiled-MVM 部分和 |
 
-## 变换
+`MEM_FILL` 和 `MEM_VEC_TO_MAT_ROW` 不是通用缓存。MRF 只能保存一个
+`NATIVE_DIM × NATIVE_DIM` tile，新的矩阵加载会覆盖旧内容。
 
-请先分析正在编辑的具体代码库。以下模式适用于**任何 NPU 工作负载**，不只适用于 BERT；如果当前固件中不存在 `mvm_tiled_q` 或 `SAVE_K_BASE`，不要盲目搜索它们。
+禁止使用裸数字 bank，例如 `6`、`5`、`7`，必须使用 `MEM_*` 名称。
 
-### 通用步骤 1：在 C 代码中定位保存-加载对
+## 修改前必须报告的分配表
 
-使用 `dag-analyze` 技能的输出确定哪些 DRAM 地址对应保存-加载往返，然后找到这些地址在 C 代码中的写入和读取位置。
-
-- **保存模式**：查找 `SEND_LO(OP_V_WR_DRAM, <addr>)` 或执行该操作的封装函数；
-- **加载模式**：查找 `SEND_LO(OP_V_RD_DRAM, <addr>)` 或执行该操作的封装函数。
-
-### 通用步骤 2：将保存重定向到 VRF 缓存
-
-不要写入 DRAM，而应将数据移动到指定的 VRF bank（通常为 6，即 `MEM_MFU_INITIAL_VRF`）。必须为每个保存的数据分配唯一的 `cache_offset`，避免相互覆盖：
-
-```c
-// 不再写入 DRAM：
-// SEND_LO(OP_V_WR_DRAM, addr);
-
-// 假设数据当前位于 MEM_ADDSUB_VRF_0 等源 VRF 中：
-uint32_t cache_offset = <根据循环索引计算唯一偏移>;
-// 如果数据尚未处于可读状态，先激活它：
-// SEND_SI(OP_V_RD, MEM_ADDSUB_VRF_0, 0);
-SEND_SI(OP_V_WR, 6, cache_offset);  // 写入 MFU_INITIAL_VRF[offset]
+```text
+对象 | bank | [base,end) | size | alignment | first_write | last_read | owner
 ```
 
-### 通用步骤 3：将加载重定向到 VRF 缓存
+每个区域都必须证明：
 
-用 VRF 读取替换后续 DRAM 加载，并使用与保存时完全相同的 `cache_offset`：
+1. size 覆盖所有 position、tile 和完整向量访问；
+2. `base % NATIVE_DIM == 0`；
+3. `offset + NATIVE_DIM <= bank_capacity`；
+4. 同时存活的区域不重叠；
+5. 复用区域生命周期不相交，而且新值先写后读；
+6. 算子仍使用临时 bank 时，不得将该 bank 分配给缓存。
 
-```c
-// 不再从 DRAM 加载：
-// SEND_LO(OP_V_RD_DRAM, addr);
-uint32_t cache_offset = <计算完全相同的唯一偏移>;
-SEND_SI(OP_V_RD, 6, cache_offset);
+所有区间使用 `[base,end)`。即使 mask 只选择部分 lane，一次 VRF 访问仍覆盖
+`NATIVE_DIM` 个元素。无法对全部验证配置证明安全时，不修改固件。
+
+## DIM 和 mask 约束
+
+- 同时保留 `num_tiles == 1` 和 `num_tiles > 1`。
+- 地址和大小从 `NATIVE_DIM`、hidden、seq_len、num_tiles、num_head、
+  head_size 推导。
+- 禁止无推导地硬编码 `0x03`、`0x0C` 等 mask。
+- 当前 8-bit 循环 lane mask 的全向量 mask 应从
+  `NATIVE_DIM >= 8 ? 0xFFu : ((1u << NATIVE_DIM) - 1u)` 推导。
+- head mask 从 head_size 和 lane offset 推导。
+- 局部修改 mask 后必须恢复。
+- 保持 head/tile/DRAM 布局和最终输出地址不变。
+
+## L1：消除中间张量 DRAM 往返
+
+根据 DAG 选择不需要对外可见的 `DRAM_STORE → DRAM_LOAD` 中间张量，证明其
+生产者、全部消费者和生命周期；在具名 VRF bank 中分配区域，用 `OP_V_WR`
+和 `OP_V_RD` 替代对应 DRAM 往返。不得删除最终输出写回。
+
+L1 不修改权重加载调度。
+
+## L2：缓存循环不变量
+
+只有已验收的 L1 输入才能执行 L2。查找 position/token 循环中重复加载且固件
+从不写入的 bias、LayerNorm gamma/beta、unit vector 等，在循环前加载一次，
+循环内从已证明安全的 VRF 区域读取。L2 不得重排矩阵乘或累加。
+
+## L3：权重驻留
+
+只有已验收 L1、L2 后才能执行。保持每个输出的 tile-column 累加顺序不变：
+一个 weight tile 加载到 MRF 后处理多个 position，每个 position 的部分和放在
+独立且通过容量证明的区域。内层 position 循环禁止任何会覆盖 MRF 的矩阵加载或
+row-buffer 操作。
+
+可以改变不同 position 之间的交错顺序，禁止改变单个输出的 FP16 累加顺序。
+
+## 每一级验收
+
+先运行 prompt 中的独立正确性门禁。BERT 生产验收使用 `all`：6 passed、
+0 skipped。G1 指标必须满足：
+
+```text
+seq2 total_bytes：候选 <= 本次迭代输入
+seq6 total_bytes：候选 <  本次迭代输入
+seq6 instr_count：仅在 instruction_gate=on 时执行配置的回退上限
 ```
 
-## 不要修改的内容
+seq6 改善但 seq2 回退时必须拒绝。一次候选同时引入多个新级别也不合规。
 
-- 不要修改 Q 投影。Q 在 attention 中按位置计算，应保留在 `ADDSUB_VRF` 中并直接消费；
-- 不要修改权重加载（`M_RD_DRAM`），权重必须来自 DRAM；
-- 不要修改模拟器，只修改当前工作负载对应的固件文件（例如 `firmware/bert/bert_layer.c`、`adderboard/firmware/adder_140p.c`）；
-- 不要改变数值计算。同一个 `W×x+b` 仍然会执行，变化的只是输出路由。
+指令门禁是策略开关，不是正确性规则。开启时默认要求候选不超过输入的 1.10
+倍；关闭时仍记录并报告指令数，但不会据此拒绝候选。关闭门禁不能证明端到端
+性能得到改善。
 
-## 验证
+Agent 结束前必须报告输入级别、应用级别、完整分配表、容量与生命周期证明、
+DIM2/DIM4 约束、验证结果、seq2/seq6 流量和 seq6 指令数前后对比。
 
-修改固件后，应按照项目的测试说明执行验证。可以使用 `self-verify` 技能，或查阅项目说明以获取准确的验证和收敛检查命令。
+## L1 同层宏规则
+
+L1 优先选择一个 `macro-dram-l1-*`，在完整分配证明下同时消除一组相关中间
+张量的 DRAM 往返。它仍然只算一个层级；禁止在同一候选中加入 L2 或 L3。
+只有没有宏能对全部验证配置完成证明时，才回退为一个原子往返候选。
+
+不得把生成器针对单次 DAG 快照的分配结论直接当作平台级证明。必须对
+dim2/dim4、seq2/seq6、单 tile/多 tile 重新推导容量上界和生命周期重叠。
+独立门禁逐一检查宏内精确 Tensor/地址，并拒绝宏外 DRAM 消减。

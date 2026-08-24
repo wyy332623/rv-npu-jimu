@@ -8,7 +8,11 @@ PRIMARY_METRIC="total_bytes"
 
 if [[ "${WORKLOAD}" == "adder" ]]; then
     DIM=4
-    SEQ_LENS="5 5"
+    HIDDEN=4
+    NUM_HEAD=1
+    # Prompt-only and first decode step: two distinct concrete DAGs are
+    # required for measured cross-length reuse evidence.
+    SEQ_LENS="24 25"
     BASELINE_FILE="jimu-dse/baseline/adder_140p.c"
 else
     DIM=2

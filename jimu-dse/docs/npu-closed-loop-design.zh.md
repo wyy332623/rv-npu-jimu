@@ -1,5 +1,7 @@
 # NPU 闭环 FW-HW 协同：设计与技能
 
+> 本文解释稳定的架构概念。当前已实现能力、schema 和验证结论见[项目状态](project-status.zh.md)，具体 DAG 证据格式见[结构化 DAG](structured-dag.zh.md)。
+
 ## 摘要
 
 本文描述 NPU 固件的自动优化闭环。系统将固件优化视为一个受约束的搜索问题：候选固件必须保持数值正确，同时改善 DRAM 带宽、片上寄存器文件利用率或计算量。
@@ -40,7 +42,7 @@ Agent 必须理解这些状态的定义-使用关系，才能判断某次 DRAM �
 
 ### VRF Cache
 
-将中间 K/V 等 tensor 从 DRAM 保存-加载往返迁移到片上 `MFU_INITIAL_VRF`，减少 DRAM 字节数，同时保持相同的数值计算。
+按 L1→L2 分阶段减少 DRAM：L1 消除中间 Tensor 的保存—加载往返；L2 在完整验证矩阵的生命周期和 bank/row 分配证明下缓存循环不变量或序列输入。L3 权重驻留不属于当前已证明范围。
 
 ### Dim Optimize
 
@@ -52,7 +54,7 @@ Agent 必须理解这些状态的定义-使用关系，才能判断某次 DRAM �
 
 ### DAG Analyze
 
-读取 `micro_op_dag.txt` 和 `dram_clusters.txt`，定位相同 DRAM 地址上的保存-加载对，并根据 AI 找出优先优化的 cluster。
+优先读取结构化 JSON/JSONL：从微操作 `defs/uses` 建立依赖，合并真实 seq2/seq6，检查 dim2/dim4、hidden4/hidden8 的验证矩阵，并生成 primitive、宏和跨配置 VRF 分配证明。TXT/DOT/SVG 只用于人工取证。
 
 ## 约束和补偿
 
@@ -89,3 +91,4 @@ Agent 必须理解这些状态的定义-使用关系，才能判断某次 DRAM �
 
 流程不依赖 Git，基线使用文件复制管理，因此可以在导出目录中复现。重新运行同一配置时，应使用相同的 `NATIVE_DIM`、hidden size、seq_len、DRAM 布局宏和 Agent 参数。
 
+运行目录是本地证据，默认不提交到源码分支。需要长期保留的结论应记录配置、日期和 SHA256，并整理到 `jimu-dse/docs/reports/`。

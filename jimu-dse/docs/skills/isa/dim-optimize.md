@@ -1,5 +1,6 @@
 ---
 name: dim-optimize
+version: 1.0.0
 description: Restructure firmware from multi-tile to single-tile projections
 ---
 

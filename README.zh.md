@@ -58,6 +58,8 @@ tests/           pytest 测试套件和 golden reference 生成器
 jimu-dse/        固件闭环优化流程
 ```
 
+JIMU-DSE 已包含版本化 skill、真实 seq2/seq6 结构化 DAG、跨 DIM/hidden 的 VRF 分配证明，以及独立正确性/指标/DAG 门禁。接手或运行 Agent 前请先阅读 [`jimu-dse/docs/README.zh.md`](jimu-dse/docs/README.zh.md) 和[当前项目状态](jimu-dse/docs/project-status.zh.md)。
+
 ## 设计文档
 
 | 文档 | 内容 |
@@ -67,6 +69,8 @@ jimu-dse/        固件闭环优化流程
 | `docs/firmware-guide.md` | RISC-V 固件和驱动 API |
 | `docs/test-guide.md` | 测试分层、fixture 和 CI |
 | `docs/build-guide.md` | 工具安装和构建步骤 |
+| `jimu-dse/docs/README.zh.md` | JIMU-DSE 当前文档入口 |
+| `jimu-dse/docs/how-to-run.zh.md` | 闭环运行、候选验证与清理 |
 
 ## 许可证
 

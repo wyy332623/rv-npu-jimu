@@ -8,7 +8,8 @@ SKILLS="dim-optimize vrf-cache"
 PRIMARY_METRIC="test_pass"
 
 if [[ "${WORKLOAD}" == "adder" ]]; then
-    SEQ_LENS="5 5"
+    NUM_HEAD=1
+    SEQ_LENS="24 25"
     BASELINE_FILE="jimu-dse/baseline/adder_140p.c"
 else
     SEQ_LENS="2 6"

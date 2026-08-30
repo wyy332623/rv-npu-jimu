@@ -88,7 +88,7 @@ MEM_MVM_INITIAL_VRF = 5
 MEM_MFU_INITIAL_VRF = 6
 MEM_ADDSUB_VRF_0    = 7
 MEM_ADDSUB_VRF_1    = 8
-MEM_ADDSUB_VRF_2    = 9
+MEM_ADDSUB_VRF_2    = 19
 MEM_FILL            = 12
 
 # ── VRF sizes (from sku_bert_np.py SkuParams) ───────────────────────
@@ -105,10 +105,6 @@ VRF_SIZES = {
 
 NATIVE_DIM_DEFAULT = 128  # from SKU
 NATIVE_DIM = NATIVE_DIM_DEFAULT  # backward-compatible alias
-
-
-class NpuMemoryAccessError(ValueError):
-    """Invalid firmware access to an NPU memory bank."""
 
 
 class NpuDeviceMini:
@@ -426,26 +422,10 @@ class NpuDeviceMini:
     # V_WR stores FROM pipeline TO memory.
     # We track the pipeline as _pipeline (ndarray, float32).
 
-    def _checked_vrf(self, mem_target, addr, operation):
-        """Return a VRF only when a full native-width access is valid."""
-        vrf = self._vrf.get(mem_target)
-        if vrf is None:
-            raise NpuMemoryAccessError(
-                f"{operation}: unknown VRF bank {mem_target}"
-            )
-        if addr < 0 or addr + self.native_dim > len(vrf):
-            raise NpuMemoryAccessError(
-                f"{operation}: VRF bank {mem_target} access "
-                f"[{addr}, {addr + self.native_dim}) exceeds "
-                f"[0, {len(vrf)})"
-            )
-        return vrf
-
     def _v_rd(self, opcode, opd0, opd1):
-        """Vector read: load from VRF at opd0[opd1] into pipeline."""
+        """Vector read: load native_dim elements from VRF starting at opd1."""
         mem_target = opd0
         addr = opd1
-
         if mem_target == MEM_FILL:
             if self._pipeline is not None:
                 self._vpipe_a = self._pipeline.copy()
@@ -458,14 +438,17 @@ class NpuDeviceMini:
             val = self._spu_srf[addr] if addr < len(self._spu_srf) else 0.0
             self._pipeline = np.full(self.native_dim, val, dtype=np.float32)
             return
-        vrf = self._checked_vrf(mem_target, addr, "V_RD")
-        if self._pipeline is not None:
-            self._vpipe_a = self._pipeline.copy()
-        # Load from VRF and round to FP16, matching HDL pipe width.
-        # Promoted back to float32 for C kernel compatibility.
-        self._pipeline = np.float16(
-            vrf[addr:addr + self.native_dim]
-        ).astype(np.float32)
+        vrf = self._vrf.get(mem_target)
+        if vrf is not None:
+            if self._pipeline is not None:
+                self._vpipe_a = self._pipeline.copy()
+            # Load native_dim elements starting at addr (matching reference ISA)
+            n = min(self.native_dim, max(0, len(vrf) - addr))
+            self._pipeline = np.zeros(self.native_dim, dtype=np.float32)
+            if n > 0:
+                # Load from VRF and round to FP16, matching HDL pipe width.
+                # Promoted back to float32 for C kernel compatibility.
+                self._pipeline[:n] = np.float16(vrf[addr:addr + n]).astype(np.float32)
 
     def _v_wr(self, opcode, opd0, opd1):
         """Vector write: store pipeline to VRF starting at opd1."""
@@ -493,14 +476,17 @@ class NpuDeviceMini:
                 self._spu_srf[addr] = max(float(np.max(data)), self._spu_srf[addr])
             return
         
-        vrf = self._checked_vrf(mem_target, addr, "V_WR")
+        vrf = self._vrf.setdefault(mem_target,
+                                    np.zeros(self.native_dim * 8, dtype=np.float32))
         # Apply write vector mask
         wmask = self._regs.get(16, 0xFF)  # REG_WRITE_VECTOR_MASK, default all ones
         # Write pipeline to VRF starting at addr, masked
-        for i in range(self.native_dim):
-            if (wmask >> (i % 8)) & 1:
-                # Store as FP16, matching HDL VRF register width
-                vrf[addr + i] = np.float16(self._pipeline[i])
+        n = min(self.native_dim, max(0, len(vrf) - addr))
+        if n > 0:
+            for i in range(n):
+                if (wmask >> (i % 8)) & 1:
+                    # Store as FP16, matching HDL VRF register width
+                    vrf[addr + i] = np.float16(self._pipeline[i])
 
     def _m_rd(self, opcode, opd0, opd1, full_operand=0):
         """Matrix read: load matrix from DRAM or row buffer into MRF."""

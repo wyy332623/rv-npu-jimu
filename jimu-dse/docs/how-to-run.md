@@ -1,7 +1,5 @@
 # NPU Closed-Loop Firmware Optimization — How to Run
 
-> Start at the [documentation index](README.md). The [current project status](project-status.zh.md) records verified coverage and the boundary between proven L1/L2 transformations and blocked L3 work.
-
 > **Purpose**: Automated DAG-guided firmware optimization for the rv-npu.
 > The loop probes DRAM traffic, generates micro-op DAG graphs, invokes an
 > AI agent to identify optimization opportunities (VRF cache, save-load
@@ -74,22 +72,22 @@ JIMU_MAX_ITER=3 bash jimu-dse/scripts/npu_closed_loop.sh \
 
 Expected output (pi):
 ```
-[START] canonical-baseline: jimu-dse/baseline/bert_layer.c
+[START] Starting from baseline — /* NPU — BERT Encoder Layer Firmware (All Features)
 --- Iteration 1 ---
 [PROBE] seq=2...  [BUILD] seq=2 OK
 [PROBE] seq=6...  [BUILD] seq=6 OK
 [PROBE] Generating micro-op DAG for agent analysis...
-  seq=2: 2144B  seq=6: 7200B
-  Baseline for this run set to 7200B
-[AGENT] Invoking pi (timeout: 1800s)...
+  seq=2: 2144B  seq=6: 6240B
+  Baseline for this run set to 6240B
+[AGENT] Invoking pi (timeout: 600s)...
 ...
-[VALIDATE] DRAM: 5856B (saved 1344B vs run-start 7200B)
+[VALIDATE] DRAM: 5856B (saved 384B vs run-start 6240B)
 ...
 ===== Done =====
-Baseline:   7200B
+Baseline:   6240B
 Best:       5856B
-Improvement: 1344B (18.7%)
-Continue: ./jimu-dse/scripts/npu_closed_loop.sh --start-from .../run-.../candidate_best.c
+Improvement: 384B (6.2%)
+To resume:  ./jimu-dse/scripts/npu_closed_loop.sh --resume .../run-...
 ```
 
 ### 4. Inspect Results
@@ -101,7 +99,7 @@ ls jimu-dse/results/run-*/candidate_best.c
 # View the DAG graphs for audit
 ls jimu-dse/results/run-*/dag_iter1/
 
-# View diff against this run's optimization_baseline.c snapshot
+# View diff against baseline
 cat jimu-dse/results/run-*/diff_1.patch
 ```
 
@@ -138,59 +136,7 @@ The pipeline supports three standard optimization goals, each defined in `jimu-d
 ### G1: DRAM Optimization
 
 Reduces DRAM bytes at a fixed dimension by applying VRF cache to eliminate
-save-load roundtrips. `vrf-cache` 2.3 applies one independently accepted level
-per iteration:
-
-1. L1: intermediate save/load elimination;
-2. L2: loop-invariant constant caching;
-3. L3: optional weight-stationary scheduling.
-
-Every candidate must provide a capacity/lifetime allocation proof. The G1
-metric gate requires seq2 bytes not to increase, seq6 bytes to strictly
-decrease, and seq6 instruction count to stay within the configured regression
-limit (10% by default):
-
-```bash
-JIMU_INSTR_REGRESSION_LIMIT=0.10 \
-  bash jimu-dse/scripts/npu_closed_loop.sh \
-  --goal dram-optimization \
-  --validation-dim all \
-  --agent opencode
-```
-
-The instruction-count policy can be disabled explicitly while still recording
-the before/after counts:
-
-```bash
-# Environment switch
-JIMU_INSTR_GATE=off bash jimu-dse/scripts/npu_closed_loop.sh \
-  --goal dram-optimization --validation-dim all --agent opencode
-
-# Equivalent command-line switch
-bash jimu-dse/scripts/npu_closed_loop.sh \
-  --goal dram-optimization --validation-dim all --agent opencode \
-  --instruction-gate off
-
-# Backward-compatible shorthand
-JIMU_INSTR_REGRESSION_LIMIT=off bash jimu-dse/scripts/npu_closed_loop.sh \
-  --goal dram-optimization --validation-dim all --agent opencode
-```
-
-The DAG evidence gate is enabled by default. It requires the Agent to declare
-one eligible PR4 L1 macro, or one primitive fallback when no macro is provable.
-It verifies that the exact declared Tensor/address scope and measured seq2/seq6
-traffic move in the claimed direction. Diagnostic runs can disable rejection
-while retaining `dag_diff_N.json` and `dag_diff_N.md`:
-
-```bash
-bash jimu-dse/scripts/npu_closed_loop.sh \
-  --goal dram-optimization --agent opencode \
-  --dag-evidence-gate off
-
-# Equivalent environment switch
-JIMU_DAG_EVIDENCE_GATE=off bash jimu-dse/scripts/npu_closed_loop.sh \
-  --goal dram-optimization --agent opencode
-```
+save-load roundtrips. For BERT, this eliminates roundtrips for K, V, Q, Z, SO, LN, GELU intermediates. For Adder, it focuses on context and score caches.
 
 ### G2: Compute Efficiency
 
@@ -263,47 +209,17 @@ pi --version
 # Install OpenCode CLI
 npm install -g @openai-code/cli
 
-# Configure and version agent skills:
+# Configure agent skills and permissions (run once):
 make opencode
 
 # This creates:
-#   .opencode/skills/common-constraints/SKILL.md
 #   .opencode/skills/dag-analyze/SKILL.md
 #   .opencode/skills/vrf-cache/SKILL.md
-#   .opencode/skills/dim-optimize/SKILL.md
-#   jimu-dse/docs/skills/skills.lock.json
+#   opencode.json (permissions for file write, read, pytest)
 ```
 
 The skills are generated from `jimu-dse/docs/skills/isa/*.md` — single source
 of truth. Run `make opencode` again if skills are updated.
-
-The closed loop also runs this synchronization automatically before each run.
-`skillctl.py` archives each semantic version, supports rollback, and rejects a
-changed skill whose version was not bumped:
-
-```bash
-python3 jimu-dse/scripts/skillctl.py list
-python3 jimu-dse/scripts/skillctl.py rollback vrf-cache 1.0.0
-python3 jimu-dse/scripts/skillctl.py verify
-```
-
-Every run stores `skills_manifest.json` and embeds each effective skill's name,
-version, and SHA256 in `run_manifest.json`. OpenCode receives all effective
-skills explicitly; PI receives the generated `skills_bundle.md`.
-
-To inspect exactly what an agent would receive without probing or modifying
-firmware:
-
-```bash
-bash jimu-dse/scripts/npu_closed_loop.sh \
-  --goal combined \
-  --agent opencode \
-  --validation-dim all \
-  --prepare-only
-```
-
-The generated skill order is always `common-constraints`, `dag-analyze`, the
-goal-specific skills, then `self-verify`.
 
 If neither agent is installed, the loop copies the unmodified firmware
 as the candidate and runs as a measurement-only pipeline.
@@ -332,7 +248,7 @@ This runs 5 iterations (configurable via `JIMU_MAX_ITER`):
 |-------|-------------|
 | **START** | Copies `jimu-dse/baseline/bert_layer.c` → `firmware/bert/bert_layer.c` |
 | **PROBE seq=2** | Builds firmware, runs emulator, measures DRAM traffic |
-| **PROBE seq=6** | Measures seq_len=6, generates concrete seq2/seq6 DAG evidence for agent |
+| **PROBE seq=6** | Same for seq_len=6, generates DAG graphs for agent |
 | **ANALYZE** | Reports DRAM ratio seq6/seq2 and cluster breakdown |
 | **CONVERGE** | Stops early if improvement < 15% vs run-start baseline |
 | **AGENT** | Invokes pi with DAG + DRAM + skills, pi patches bert_layer.c |
@@ -340,21 +256,13 @@ This runs 5 iterations (configurable via `JIMU_MAX_ITER`):
 | **DAG** | Generates post-optimization DAG graphs for audit |
 | **DEPLOY** | Saves candidate, repeats from iteration 2 with optimized code |
 
-### 3. Continue from a Previous Result
+### 3. Resume from a Previous Run
 
 ```bash
-# Continue from a run's candidate_best.c
-bash jimu-dse/scripts/npu_closed_loop.sh \
-  --start-from jimu-dse/results/run-20260730-141105-154854
-
-# Or continue from one exact accepted iteration
-bash jimu-dse/scripts/npu_closed_loop.sh \
-  --start-from jimu-dse/results/run-20260730-141105-154854/candidate_4.c
+bash jimu-dse/scripts/npu_closed_loop.sh --resume jimu-dse/results/run-20260622-142411/
 ```
 
-`--resume <run-dir>` remains a compatibility alias for selecting that
-directory's `candidate_best.c`. The run output prints a ready-to-use
-`--start-from` command at the end.
+The run output prints a ready-to-use resume command at the end.
 
 ### 4. Run the Validation Test Suite
 
@@ -370,8 +278,7 @@ Each run creates a timestamped directory:
 
 ```
 jimu-dse/results/run-<YYYYMMDD>-<HHMMSS>-<PID>/
-├── optimization_baseline.c ← Immutable snapshot selected for this run
-├── candidate_best.c       ← Best optimized firmware (use with --start-from)
+├── candidate_best.c       ← Best optimized firmware (copy for --resume)
 ├── candidate_1.c          ← Iteration 1 candidate
 ├── candidate_2.c          ← Iteration 2 candidate
 ├── dag_agent/             ← DAG graphs for the agent prompt
@@ -387,8 +294,8 @@ jimu-dse/results/run-<YYYYMMDD>-<HHMMSS>-<PID>/
 ├── dag_iter2/             ← DAG graphs for iteration 2
 ├── prompt_1.txt           ← Agent prompt for iteration 1
 ├── prompt_2.txt           ← Agent prompt for iteration 2
-├── diff_1.patch           ← Diff against optimization_baseline.c (iteration 1)
-├── diff_2.patch           ← Diff against optimization_baseline.c (iteration 2)
+├── diff_1.patch           ← Diff against baseline (iteration 1)
+├── diff_2.patch           ← Diff against baseline (iteration 2)
 ├── p2_probe.json          ← DRAM probe result for seq=2
 ├── p6_probe.json          ← DRAM probe result for seq=6
 └── val_1.json             ← Validation result for iteration 1
@@ -400,25 +307,6 @@ To view a DAG as SVG (requires graphviz):
 dot -Tsvg jimu-dse/results/run-*/dag_iter1/micro_op_dag.dot -o /tmp/dag.svg
 ```
 
-Each `dag_agent/`, `dag_before_iterN/`, and `dag_iterN/` uses seq6 as the
-authoritative root DAG and stores the short trace under `seq2/`. DAG-PR5/PR6 add:
-
-- `multiseq_metadata.json`: binds both concrete configurations and ELF hashes;
-- `multiseq_summary.md`: readable L1/L2/L3 opportunity ranking;
-- `loop_invariants.json`: exact cross-sequence reuse counts and upper bounds;
-- `candidate_evidence.jsonl`: compact records and representative nodes passed
-  to the agent. Full JSONL DAGs remain on disk for the independent gate.
-- `proof/dim*-h*-head*-seq*/`: every additional correctness configuration;
-- `allocation_summary.md`: compact matrix, proof digests and reference regions
-  explicitly attached to the agent;
-- `allocation_proof.json`: complete L1/L2 capacity, alignment and lifetime
-  proof across dim2-h4, dim4-h4 and dim4-h8 at seq2/seq6.
-
-Only macros whose allocation has `cross_config_proven=true` and
-`validation_matrix_complete=true` may be selected. L1 must finish before L2.
-L3 remains blocked until schedule, MRF residency, partial sums and FP16 order
-also have an independent proof.
-
 ---
 
 ## Configuration
@@ -427,7 +315,7 @@ also have an independent proof.
 |-------------|---------|-------------|
 | `JIMU_MAX_ITER` | 5 | Max optimization iterations per run |
 | `JIMU_THRESHOLD` | 0.15 | Convergence threshold (fraction of baseline). Stop when improvement < 15% |
-| `JIMU_AGENT_TIMEOUT` | 1800 | Timeout in seconds for each agent invocation (pi or opencode) |
+| `JIMU_AGENT_TIMEOUT` | 600 | Timeout in seconds for each agent invocation (pi or opencode) |
 | `OPENCODE_MODEL` | `opencode/big-pickle` | OpenCode model in provider/model format |
 | `CC` | `riscv64-unknown-elf-gcc` | RISC-V cross-compiler |
 
@@ -438,8 +326,7 @@ also have an independent proof.
 | `--goal <name>` | `dram-optimization` | Optimization goal: `dram-optimization`, `compute-optimization`, `combined` |
 | `--agent pi` | pi | Agent to use: `pi` or `opencode` |
 | `--model <provider/model>` | `$OPENCODE_MODEL` | OpenCode model (overrides env var) |
-| `--start-from <path>` | canonical baseline | Start from a `.c` file or run directory |
-| `--resume <dir>` | — | Compatibility alias for a run directory's `candidate_best.c` |
+| `--resume <dir>` | — | Resume from a previous run's directory |
 
 Examples:
 
@@ -466,37 +353,37 @@ The pipeline measures two configurations to detect DRAM traffic patterns:
 | dim2-seq2 | 2 | Baseline with minimal intermediate saves |
 | dim2-seq6 | 6 | 3× DRAM scaling reveals VRF overflow / save-load pairs |
 
-Typical unoptimized baseline DRAM after measuring the real seq-specific ELF:
+Typical unoptimized baseline DRAM:
 
 | Metric | seq=2 | seq=6 |
 |--------|-------|-------|
-| V_RD_DRAM elements | 240 | 912 |
-| V_WR_DRAM elements | 104 | 312 |
+| V_RD_DRAM ops | ~180 | ~456 |
+| V_WR_DRAM ops | ~60 | ~156 |
 | M_RD_DRAM ops | 144 (constant) | 144 (constant) |
-| Total bytes | 2,144 | 7,200 |
+| Total bytes | ~2,144 | ~6,240 |
 
 After VRF cache optimization, typical results:
 
 | Iteration | seq=6 DRAM | Savings vs baseline |
 |-----------|-----------|-------------------|
-| 0 (canonical baseline) | 7,200B | — |
-| K/V cache | 5,856B | 18.7% |
-| + Q cache | 5,664B | 21.3% |
-| + Z/SO/LN1/GELU cache | 4,896B | 32.0% |
+| 0 (baseline) | 6,240B | — |
+| 1 (K/V cache) | 5,856B | 6.2% |
+| 2 (Q/SO/Z cache) | 4,704B | 24.6% |
+| 3 (LN scratch) | 3,936B | 36.9% |
+| 4 (X cache) | 3,744B | 40.0% |
 
 ---
 
 ## Baseline File
 
-The known-correct unoptimized firmware references are stored in
-`jimu-dse/baseline/`, for example `bert_layer.c` and `adder_140p.c`.
-They are canonical references and must not be replaced by optimized results.
+The unoptimized reference firmware files are stored in `jimu-dse/baseline/`.
+For example, `jimu-dse/baseline/bert_layer.c` and `jimu-dse/baseline/adder_140p.c`.
+These are committed copies of the original firmware before any optimizations. To update the baseline:
 
-Fresh runs start from the canonical reference. Continued runs use
-`--start-from`; the selected source is frozen as
-`optimization_baseline.c`, and all metrics and diffs in that run are relative
-to that snapshot. At exit, the working firmware is restored to the canonical
-unoptimized source.
+```bash
+# After a successful optimization, promote the best candidate:
+cp jimu-dse/results/run-<timestamp>/candidate_best.c jimu-dse/baseline/<target_file>.c
+```
 
 ---
 
@@ -525,7 +412,7 @@ Output in `_out/graphs/<config-name>/`.
 
 | Skill | File | Description |
 |-------|------|-------------|
-| dag-analyze | `jimu-dse/docs/skills/isa/dag-analyze.md` | Compare seq2/seq6 DAGs and select proved L1 candidates |
+| dag-analyze | `jimu-dse/docs/skills/isa/dag-analyze.md` | Read DAG to identify save-load pairs |
 | vrf-cache | `jimu-dse/docs/skills/isa/vrf-cache.md` | Replace DRAM roundtrips with on-chip VRF cache |
 | self-verify | `jimu-dse/docs/skills/isa/self-verify.md` | Self-verify after firmware modification |
 
@@ -576,23 +463,3 @@ Output in `_out/graphs/<config-name>/`.
 | pi outputs summary instead of code | Prompt missing write instruction | The loop prompt includes write instructions; check prompt_X.txt |
 | `max_diff > 0.05` on output | Optimization introduced numerical error | Revert candidate, check diff_X.patch for incorrect changes |
 | `dot: command not found` | Graphviz not installed | `apt install graphviz` (optional, for SVG rendering) |
-
----
-
-## Workspace Cleanup
-
-The cleanup command is dry-run by default and preserves virtual environments and all run history:
-
-```bash
-# Preview verified build/cache/backup targets.
-bash jimu-dse/scripts/clean_workspace.sh
-
-# Remove reproducible outputs.
-bash jimu-dse/scripts/clean_workspace.sh --apply
-
-# Optionally remove one exact temporary run.
-bash jimu-dse/scripts/clean_workspace.sh --apply \
-  --run-dir jimu-dse/results/run-<timestamp>
-```
-
-Run `make kernels` again before tests after cleanup. Promote durable conclusions to `jimu-dse/docs/reports/`; do not treat a run-local `candidate_best.c` as the canonical baseline.

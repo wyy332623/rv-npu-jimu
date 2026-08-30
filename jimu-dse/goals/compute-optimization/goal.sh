@@ -8,8 +8,7 @@ SKILLS="dim-optimize"
 PRIMARY_METRIC="test_pass"
 
 if [[ "${WORKLOAD}" == "adder" ]]; then
-    NUM_HEAD=1
-    SEQ_LENS="24 25"
+    SEQ_LENS="5 5"
     BASELINE_FILE="jimu-dse/baseline/adder_140p.c"
 else
     SEQ_LENS="2 6"

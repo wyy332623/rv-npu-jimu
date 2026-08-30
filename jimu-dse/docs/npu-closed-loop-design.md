@@ -1,9 +1,7 @@
 # NPU Closed-Loop FW-HW Co-Optimization: Design & Skills
 
-> **Document role**: conceptual design snapshot. For implemented schemas, validation coverage, skill versions, and known boundaries, use the [current project status](project-status.zh.md) and [structured DAG specification](structured-dag.md).
-
 > **Audience**: Primary — the optimization agent (AI); Secondary — human experts reviewing, updating, and trusting the system  
-> **Status**: Conceptual design; implementation details may lag
+> **Status**: Implementation v2  
 > **Date**: 2026-06-22
 
 ---
@@ -110,24 +108,17 @@ PROBE → ANALYZE → AGENT → VALIDATE → DEPLOY → LOOP
 
 | | Within a run | Between runs |
 |--|-------------|--------------|
-| **Behavior** | Iteration N+1 starts from iteration N's accepted result | Default: starts from the canonical unoptimized baseline |
-| **Flag needed** | None — always incremental | `--start-from <file-or-run-dir>` selects an earlier result |
-| **Baseline** | Frozen as `optimization_baseline.c` at run creation | Canonical baseline remains unchanged and is restored at exit |
+| **Behavior** | Iteration N+1 starts from iteration N's result (incremental) | Default: copies `jimu-dse/baseline/bert_layer.c` for fresh start |
+| **Flag needed** | None — always incremental | `--resume <dir>` to continue from a previous run's best candidate |
+| **Baseline** | Measured at run start (first iteration) | Comparison always against the file-based baseline |
 
 ### 1.4 Key Design Points
 
 1. **No git dependency**: Baseline management uses `cp`, not `git checkout`. Works on exported code.
-2. **Two baseline roles**: `jimu-dse/baseline/bert_layer.c` is the immutable,
-   unoptimized canonical reference; `optimization_baseline.c` is the selected,
-   immutable starting snapshot for one run.
-3. **Explicit continuation**: A run directory selects `candidate_best.c`; a
-   source path may select any `candidate_N.c`. Both path and SHA256 are recorded.
-4. **DAG build isolation**: Graph generation uses
-   `build_graph_dim<dim>_seq<seq>` and cannot overwrite the metric/correctness
-   ELF in `build_dim<dim>`.
-5. **DAG-guided**: The agent reads `dag_agent/micro_op_dag.txt` to identify save-load pairs before applying optimizations.
-6. **Timestamped run directories**: Each run creates `jimu-dse/results/run-<timestamp>/` with all artifacts.
-7. **Only `bert_layer.c` is modified**: The agent never touches emulator, ISS, or test code.
+2. **File-based baseline**: `jimu-dse/baseline/bert_layer.c` is a committed copy of the unoptimized firmware.
+3. **DAG-guided**: The agent reads `dag_agent/micro_op_dag.txt` to identify save-load pairs before applying optimizations.
+4. **Timestamped run directories**: Each run creates `jimu-dse/results/run-<timestamp>/` with all artifacts.
+5. **Only `bert_layer.c` is modified**: The agent never touches emulator, ISS, or test code.
 
 ---
 

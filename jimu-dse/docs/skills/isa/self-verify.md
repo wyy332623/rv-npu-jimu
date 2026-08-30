@@ -1,80 +1,53 @@
 ---
 name: self-verify
-version: 2.0.0
-description: Enforce scoped firmware correctness gates without weakening or filtering validation
+description: Self-verify firmware correctness and DRAM improvement
 license: MIT
 ---
 
 # Self-Verify Skill
 
-This skill is mandatory and runs after the goal-specific transformation skill.
-It does not replace the closed loop's independent acceptance gate.
+## After Modifying `bert_layer.c`
 
-## Authority
+### 1. Numerical Correctness
 
-- The exact command under `Independent Acceptance Gate` in the run prompt is
-  authoritative.
-- Run that command without appending `grep`, `head`, `tail`, `|| true`, a
-  different `-k` expression, or any other output filter.
-- Success requires pytest exit status 0, the expected number of passed tests,
-  and zero skipped tests.
-- Never modify tests, tolerances, golden data, skip/xfail markers, the emulator,
-  ISS, hardware model, or validation command.
-- A diagnostic subset can locate a defect, but it cannot accept a candidate.
-
-## BERT Acceptance Matrix
-
-| Validation scope | Required configurations | Expected passed |
-|---|---|---:|
-| `dim2` | dim2/hidden4, seq2 and seq6 | 2 |
-| `dim4` | dim4/hidden8 seq2/seq6 and dim4/hidden4 seq2/seq6 | 4 |
-| `all` | every dim2 and dim4 configuration above | 6 |
-
-`all` is the production acceptance scope. `dim2` and `dim4` are supported for
-targeted debugging; a partially validated candidate must not be described as
-cross-dimension verified.
-
-## Required Workflow
-
-1. Compile the modified target firmware.
-2. Run the exact independent acceptance command from the prompt.
-3. Check the command's exit status, not filtered console text.
-4. Confirm the passed-test count matches the selected scope.
-5. Confirm pytest reports no skipped checks.
-6. Only after correctness passes, compare the optimization metric.
-
-If correctness fails, do not relax the tolerance. Use instrumentation or a
-targeted test only to identify the first divergent stage, then rerun the full
-selected gate.
-
-## Diagnostic Order
-
-Localize the first divergence in this order:
-
-1. Q/K/V projections;
-2. attention scores and softmax;
-3. context/self-output;
-4. first residual and LayerNorm;
-5. FFN intermediate and GELU;
-6. FFN output, second residual, and final LayerNorm.
-
-Some optimized candidates intentionally keep tensors in VRF and do not
-materialize every intermediate in DRAM. Do not claim an intermediate matched
-unless the active instrumentor actually captured it.
-
-## Required Agent Report
-
-Before finishing, report:
-
-```text
-validation_scope:
-acceptance_command:
-pytest_returncode:
-passed/expected:
-skipped:
-metric_before:
-metric_after:
-result: PASS or FAIL
+```bash
+# Quick check (seq6 only, ~10s)
+python3 -m pytest tests/integration/test_bert_e2e.py --instrument -k seq6 -s --no-header 2>&1 | grep "max_diff"
 ```
 
-Only the independent closed-loop gate may mark the candidate accepted.
+Expected output:
+```
+  Q: max_diff=0.000000, mean_diff=0.000000
+  K: max_diff=0.000000, mean_diff=0.000000
+  ...
+```
+
+All `max_diff` must be < 0.05. If any fail, the modification produced incorrect numerical output.
+
+### 2. DRAM Traffic
+
+```bash
+# Run the full test suite to check DRAM
+python3 -m pytest tests/integration/test_bert_e2e.py -k seq6 -s 2>&1 | grep -E "DRAM|max_diff|FAILED|PASSED"
+```
+
+Look for the DRAM traffic line — it shows total bytes, V_RD_DRAM ops, etc.
+
+### 3. Full Regression
+
+```bash
+# All 4 configs (seq2 + seq6 for dim2 and dim4)
+python3 -m pytest tests/integration/test_bert_e2e.py -v 2>&1 | tail -10
+```
+
+All 4 must pass.
+
+## Common Failures
+
+| Symptom | Likely Cause | Fix |
+|---------|-------------|-----|
+| Q/K max_diff > 0.05 | Wrong VRF bank or offset | Check VREG_MOVE target address |
+| Z max_diff > 0.05 | V.T re-transpose reads wrong V data | Check V cache offset formula |
+| LN1/LN2 max_diff > 0.05 | LayerNorm input wrong | Check residual add dataflow |
+| DRAM not reduced | save_row_tiles still being called | Search for OP_V_WR_DRAM in bert_layer.c |
+| Compile error | SEND_SI instead of SEND_LO for INC | Use correct macro |

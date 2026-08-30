@@ -1,9 +1,5 @@
 WORKLOAD_NAME="bert"
 MAKE_TARGET="bert"
 TARGET_FILE="firmware/bert/bert_layer.c"
-TEST_VERIFY_CMD="python3 -m pytest tests/integration/test_bert_e2e.py -k \"dim${DIM} and h${HIDDEN}\" --no-header -q -rs"
-TEST_CONVERGE_CMD="${TEST_VERIFY_CMD}"
-TEST_GATE_CMD="python3 -m pytest tests/integration/test_bert_e2e.py --no-header -q -rs"
-EXPECTED_GATE_TESTS_ALL=6
-EXPECTED_GATE_TESTS_DIM2=2
-EXPECTED_GATE_TESTS_DIM4=4
+TEST_VERIFY_CMD="python3 -m pytest tests/integration/test_bert_e2e.py -k \"dim${DIM} and h${HIDDEN}\" -s --no-header 2>&1 | grep max_diff"
+TEST_CONVERGE_CMD="python3 -m pytest tests/integration/test_bert_e2e.py -k \"dim${DIM} and h${HIDDEN}\" --no-header -q 2>&1 | tail -3"

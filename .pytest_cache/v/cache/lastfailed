@@ -1,7 +1,0 @@
-{
-  "tests/integration/test_graph_generation.py::TestSymGraphFromEmulator::test_instantiate_round_trip": true,
-  "tests/integration/test_bert_e2e.py::test_bert_e2e_multi_tile[dim2-lanes2-head2-h4-seq2]": true,
-  "tests/integration/test_bert_e2e.py::test_bert_e2e_multi_tile[dim2-lanes2-head2-h4-seq6]": true,
-  "tests/integration/test_bert_e2e.py::test_bert_e2e_multi_tile[dim4-lanes4-head2-h8-seq2]": true,
-  "tests/integration/test_bert_e2e.py::test_bert_e2e_multi_tile[dim4-lanes4-head2-h8-seq6]": true
-}

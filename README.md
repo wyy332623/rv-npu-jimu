@@ -63,6 +63,8 @@ tests/           pytest suite + golden reference generator
 jimu-dse/        Closed-loop firmware optimization pipeline
 ```
 
+JIMU-DSE includes versioned agent skills, concrete seq2/seq6 structured DAGs, cross-configuration VRF allocation proofs, and independent correctness/metric/DAG gates. Start with the [JIMU-DSE documentation index](jimu-dse/docs/README.md) and the [current status](jimu-dse/docs/project-status.zh.md).
+
 ## Design Docs
 
 | Document | Covers |
@@ -72,6 +74,8 @@ jimu-dse/        Closed-loop firmware optimization pipeline
 | `docs/firmware-guide.md` | RISC-V firmware, driver API |
 | `docs/test-guide.md` | Test pyramid, fixtures, CI |
 | `docs/build-guide.md` | Tool installation, build steps |
+| `jimu-dse/docs/README.md` | JIMU-DSE documentation entry point |
+| `jimu-dse/docs/how-to-run.md` | Closed-loop operation and validation |
 
 ## License
 

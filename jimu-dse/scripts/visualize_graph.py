@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Generate graph visualizations from BERT firmware running on the NPU emulator.
+"""Generate graph visualizations from workload firmware on the NPU emulator.
 
 Usage:
     python jimu-dse/scripts/visualize_graph.py                    # all graphs, default params
@@ -27,6 +27,8 @@ from pathlib import Path
 # ── Repo-root-relative imports ─────────────────────────────────────
 REPO_ROOT = Path(__file__).resolve().parent.parent.parent
 sys.path.insert(0, str(REPO_ROOT))
+
+from dag_workload_runtime import WorkloadConfig, get_workload_runtime
 
 
 def check_deps(need_sym: bool = False) -> list[str]:
@@ -60,7 +62,10 @@ def build_firmware(dim, hidden_size, seq_len, num_head) -> str:
     ln_size = num_tiles * 8
     scratch_addr = 0x500
 
-    build_dir = f"build_dim{dim}"
+    # Graph generation must never reuse the correctness/metric build directory.
+    # The closed-loop probe owns build_dim{dim}; reusing it here can replace a
+    # seq_len=N probe ELF with a seq_len=1 graph ELF before measurement.
+    build_dir = f"build_graph_dim{dim}_h{hidden_size}_seq{seq_len}"
     env = {
         'NATIVE_DIM': str(dim),
         'SEQ_LEN': str(seq_len),
@@ -92,7 +97,7 @@ def build_firmware(dim, hidden_size, seq_len, num_head) -> str:
     return elf
 
 
-def load_weights(npu, params, dim, hidden_size):
+def load_weights(npu, params, dim, hidden_size, seq_len):
     """Load BERT weights and inputs into NPU DRAM (mirrors test_bert_e2e logic)."""
     import numpy as np
     from emulator.npu_device_mini import MEM_DRAM
@@ -100,9 +105,12 @@ def load_weights(npu, params, dim, hidden_size):
     num_tiles = hidden_size // dim
 
     # Input X — use zeros (graph structure doesn't depend on values)
-    npu._vrf[MEM_DRAM][0:hidden_size] = np.zeros(hidden_size, dtype=np.float32)
+    input_elements = hidden_size * seq_len
+    npu._vrf[MEM_DRAM][0:input_elements] = np.zeros(
+        input_elements, dtype=np.float32
+    )
 
-    proj_base = hidden_size + 4
+    proj_base = input_elements + 4
     mat_size = hidden_size * hidden_size
     stride = mat_size + hidden_size
 
@@ -168,7 +176,7 @@ def run_emulator(dim, hidden_size, seq_len, num_head, params, elf_path=None):
     npu = NpuDeviceMini(native_dim=dim)
     npu.set_hidden_size(hidden_size)
     npu.set_seq_len(seq_len)
-    load_weights(npu, params, dim, hidden_size)
+    load_weights(npu, params, dim, hidden_size, seq_len)
 
     tracer = EventTracer(npu)
     rec = TraceRecorder(npu)
@@ -213,6 +221,44 @@ def render_dot(dot_path: Path, out_dir: Path, no_render: bool):
             print(f"  ✗  {cmd} → {r.stderr.strip()[:120]}")
 
 
+def write_structured_outputs(
+    out_dir,
+    nodes,
+    edges,
+    *,
+    dim,
+    hidden_size,
+    seq_len,
+    num_head,
+    total_events,
+    elf_path,
+    clusters=None,
+    workload="bert",
+    phase_ranges=None,
+):
+    """Write the PR1/PR2 machine-readable and agent-readable DAG views."""
+    from emulator.npu_dag_structured import write_structured_dag
+
+    paths = write_structured_dag(
+        out_dir,
+        nodes,
+        edges,
+        dim=dim,
+        hidden_size=hidden_size,
+        seq_len=seq_len,
+        num_head=num_head,
+        total_events=total_events,
+        elf_path=elf_path,
+        clusters=clusters,
+        workload=workload,
+        phase_ranges=phase_ranges,
+    )
+    print(
+        "  structured DAG: "
+        + ", ".join(path.name for path in paths.values())
+    )
+
+
 def main():
     ap = argparse.ArgumentParser(description="Generate NPU graph visualizations from firmware emulation")
     ap.add_argument("--phase", choices=["dag", "micro", "op", "sym", "cluster", "all"], default="all",
@@ -221,6 +267,11 @@ def main():
     ap.add_argument("--hidden", type=int, default=4, help="Hidden size (default: 4)")
     ap.add_argument("--seq-len", type=int, default=1, help="Sequence length (default: 1)")
     ap.add_argument("--num-head", type=int, default=2, help="Number of attention heads (default: 2)")
+    ap.add_argument(
+        "--workload",
+        default="bert",
+        help="Workload adapter name (bert, adder_140p; default: bert)",
+    )
     ap.add_argument("-o", "--output", type=str, default="_out", help="Output directory (default: _out)")
     ap.add_argument("--no-render", action="store_true", help="Only write .dot files, skip graphviz rendering")
     args = ap.parse_args()
@@ -233,6 +284,8 @@ def main():
     hidden_size = args.hidden
     seq_len = args.seq_len
     num_head = args.num_head
+    runtime = get_workload_runtime(args.workload)
+    config = WorkloadConfig(dim, hidden_size, seq_len, num_head)
 
     # ── Dependency check ───────────────────────────────────────────
     need_sym = phase in ("sym", "all")
@@ -245,13 +298,18 @@ def main():
 
     # ── Build firmware ─────────────────────────────────────────────
     print(f"\n══ Building firmware: dim={dim}, hidden={hidden_size}, seq_len={seq_len}, num_head={num_head} ══")
-    elf_path = build_firmware(dim, hidden_size, seq_len, num_head)
+    try:
+        elf_path = runtime.build(config, build_kind="graph")
+    except (RuntimeError, ValueError) as exc:
+        print(f"  firmware build failed: {exc}", file=sys.stderr)
+        raise SystemExit(1) from exc
+    print(f"  workload={runtime.name}; firmware={elf_path}")
 
     # ── Phase 1: Instruction DAG ───────────────────────────────────
     if phase in ("dag", "all"):
         print("\n══ Phase 1: Instruction DAG ══")
-        params = generate_bert_params(dim, hidden_size, seq_len, num_head)
-        tracer, rec = run_emulator(dim, hidden_size, seq_len, num_head, params, elf_path)
+        run = runtime.run(config, elf_path)
+        tracer, rec = run.tracer, run.recorder
 
         from emulator.npu_dag import build_dag, dag_to_dot, dag_to_text
 
@@ -274,8 +332,8 @@ def main():
     # ── Phase 1.5: Micro-Op DAG ─────────────────────────────────
     if phase in ("dag", "micro", "all"):
         print("\n══ Phase 1.5: Micro-Op DAG ══")
-        params = generate_bert_params(dim, hidden_size, seq_len, num_head)
-        tracer, rec = run_emulator(dim, hidden_size, seq_len, num_head, params, elf_path)
+        run = runtime.run(config, elf_path)
+        tracer, rec = run.tracer, run.recorder
 
         from emulator.npu_micro_op_dag import (
             collapse_to_micro_ops, build_micro_op_dag,
@@ -298,21 +356,42 @@ def main():
         txt_path.write_text(micro_op_dag_to_text(nodes, edges))
         print(f"  ✓  {txt_path}")
 
-        # Connectivity diagnostics
-        from emulator.npu_micro_op_dag import check_dag_connectivity
-        diag = check_dag_connectivity(
-            nodes, edges, dim=dim, hidden_size=hidden_size, seq_len=seq_len)
-        print()
-        for line in diag.split("\n"):
-            print(f"  {line}")
+        write_structured_outputs(
+            out_dir,
+            nodes,
+            edges,
+            dim=dim,
+            hidden_size=hidden_size,
+            seq_len=seq_len,
+            num_head=num_head,
+            total_events=total_events,
+            elf_path=elf_path,
+            workload=runtime.name,
+            phase_ranges=run.phase_ranges,
+        )
+
+        # The legacy connectivity text decodes BERT's fixed DRAM map.  Other
+        # workloads use the structured adapter annotations written above.
+        if runtime.name == "bert":
+            from emulator.npu_micro_op_dag import check_dag_connectivity
+            diag = check_dag_connectivity(
+                nodes, edges, dim=dim, hidden_size=hidden_size, seq_len=seq_len)
+            print()
+            for line in diag.split("\n"):
+                print(f"  {line}")
+        else:
+            print(
+                f"  workload phases: {len(run.phase_ranges)}; "
+                "connectivity annotations are in structured JSON"
+            )
 
         tracer.unpatch()
 
     # ── Phase 1.7: DRAM-flow cluster graph ──────────────────────────
-    if phase in ("cluster", "all"):
+    if phase in ("cluster", "all") and runtime.name == "bert":
         print("\n══ Phase 1.7: DRAM-Flow Clusters ══")
-        params = generate_bert_params(dim, hidden_size, seq_len, num_head)
-        tracer, rec = run_emulator(dim, hidden_size, seq_len, num_head, params, elf_path)
+        run = runtime.run(config, elf_path)
+        tracer, rec = run.tracer, run.recorder
 
         from emulator.npu_micro_op_dag import (
             collapse_to_micro_ops, build_micro_op_dag,
@@ -335,13 +414,26 @@ def main():
         print(f"  ✓  {dot_path}")
         render_dot(dot_path, out_dir, args.no_render)
 
+        write_structured_outputs(
+            out_dir,
+            nodes,
+            edges,
+            dim=dim,
+            hidden_size=hidden_size,
+            seq_len=seq_len,
+            num_head=num_head,
+            total_events=len(tracer.events),
+            elf_path=elf_path,
+            clusters=clusters,
+        )
+
         tracer.unpatch()
 
     # ── Phase 2: Operator graph ────────────────────────────────────
-    if phase in ("op", "all"):
+    if phase in ("op", "all") and runtime.supports_operator_graph:
         print("\n══ Phase 2: Operator Graph ══")
-        params = generate_bert_params(dim, hidden_size, seq_len, num_head)
-        tracer, rec = run_emulator(dim, hidden_size, seq_len, num_head, params, elf_path)
+        run = runtime.run(config, elf_path)
+        tracer, rec = run.tracer, run.recorder
 
         from emulator.npu_op_graph import build_op_graph, op_graph_to_dot, op_graph_to_text
 
@@ -363,7 +455,7 @@ def main():
         tracer.unpatch()
 
     # ── Phase 3: Symbolic graph ────────────────────────────────────
-    if phase in ("sym", "all"):
+    if phase in ("sym", "all") and runtime.supports_symbolic_graph:
         print("\n══ Phase 3: Symbolic Graph ══")
         from emulator.npu_op_graph import build_op_graph, op_graph_to_dot, op_graph_to_text
         from emulator.npu_sym_graph import derive_sym_graph, sym_graph_to_dot, sym_graph_to_text, instantiate
@@ -372,9 +464,10 @@ def main():
         graphs = {}
         for sl in seq_lens:
             # Rebuild firmware for this seq_len
-            elfi = build_firmware(dim, hidden_size, sl, num_head)
-            params = generate_bert_params(dim, hidden_size, sl, num_head)
-            tracer, rec = run_emulator(dim, hidden_size, sl, num_head, params, elfi)
+            symbolic_config = WorkloadConfig(dim, hidden_size, sl, num_head)
+            elfi = runtime.build(symbolic_config, build_kind="graph")
+            run = runtime.run(symbolic_config, elfi)
+            tracer, rec = run.tracer, run.recorder
             batch_sizes = [len(b) for b in rec.extract_batches()]
             g = build_op_graph(
                 tracer.events, dim=dim, hidden_size=hidden_size,

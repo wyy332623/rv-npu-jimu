@@ -1,0 +1,94 @@
+{
+  "schema_version": 1,
+  "skills": {
+    "common-constraints": {
+      "archive": "jimu-dse/docs/skills/versions/common-constraints/1.0.0.md",
+      "name": "common-constraints",
+      "opencode_path": ".opencode/skills/common-constraints/SKILL.md",
+      "sha256": "86908ce63ac6d94753e14f7629cc8375bbc76adfd7bc94b9bf808baccafec8cb",
+      "source": "jimu-dse/docs/skills/isa/common-constraints.md",
+      "version": "1.0.0"
+    },
+    "dag-analyze": {
+      "archive": "jimu-dse/docs/skills/versions/dag-analyze/1.15.0.md",
+      "name": "dag-analyze",
+      "opencode_path": ".opencode/skills/dag-analyze/SKILL.md",
+      "sha256": "7208ff2ed2568c879123ed93f0a06eddadde4802854ade70ad001b77b8d90142",
+      "source": "jimu-dse/docs/skills/isa/dag-analyze.md",
+      "translations": {
+        "zh": {
+          "archive": "jimu-dse/docs/skills/versions/dag-analyze/1.15.0.zh.md",
+          "opencode_path": ".opencode/skills/dag-analyze/SKILL.zh.md",
+          "sha256": "81131657b72007f1fc3ebcb183bbcb9d6d71a1bcfc062297e1a35de026a4dc7e",
+          "source": "jimu-dse/docs/skills/isa/dag-analyze.zh.md"
+        }
+      },
+      "version": "1.15.0"
+    },
+    "dim-optimize": {
+      "archive": "jimu-dse/docs/skills/versions/dim-optimize/1.0.0.md",
+      "name": "dim-optimize",
+      "opencode_path": ".opencode/skills/dim-optimize/SKILL.md",
+      "sha256": "d422581202df0bf89a0678593a10c2a02b85e5b60341273027021377e58ded87",
+      "source": "jimu-dse/docs/skills/isa/dim-optimize.md",
+      "translations": {
+        "zh": {
+          "archive": "jimu-dse/docs/skills/versions/dim-optimize/1.0.0.zh.md",
+          "opencode_path": ".opencode/skills/dim-optimize/SKILL.zh.md",
+          "sha256": "80730fb513a9eafbd436a77a83bee43d5330faafd4e1aec1e3b37dedd350f346",
+          "source": "jimu-dse/docs/skills/isa/dim-optimize.zh.md"
+        }
+      },
+      "version": "1.0.0"
+    },
+    "inc-folding": {
+      "archive": "jimu-dse/docs/skills/versions/inc-folding/1.0.0.md",
+      "name": "inc-folding",
+      "opencode_path": ".opencode/skills/inc-folding/SKILL.md",
+      "sha256": "e59de97e6e91e84d223873b25fdf71ac79f71cb97303e87a36fcde2cc44ea1e7",
+      "source": "jimu-dse/docs/skills/isa/inc_folding.md",
+      "translations": {
+        "zh": {
+          "archive": "jimu-dse/docs/skills/versions/inc-folding/1.0.0.zh.md",
+          "opencode_path": ".opencode/skills/inc-folding/SKILL.zh.md",
+          "sha256": "7c804131e3e56eef861b8c4b134bc2fe4eee17825c78f18189103e5d769ff1d1",
+          "source": "jimu-dse/docs/skills/isa/inc_folding.zh.md"
+        }
+      },
+      "version": "1.0.0"
+    },
+    "self-verify": {
+      "archive": "jimu-dse/docs/skills/versions/self-verify/2.0.0.md",
+      "name": "self-verify",
+      "opencode_path": ".opencode/skills/self-verify/SKILL.md",
+      "sha256": "dff8d7702705271de74df1deec2a092d401f5abde5115cc5cff5764b4f3170e4",
+      "source": "jimu-dse/docs/skills/isa/self-verify.md",
+      "translations": {
+        "zh": {
+          "archive": "jimu-dse/docs/skills/versions/self-verify/2.0.0.zh.md",
+          "opencode_path": ".opencode/skills/self-verify/SKILL.zh.md",
+          "sha256": "acc1f6445d62bb3f1c5024a78e756ecacb9eb9696d46b78d09582b73f5959360",
+          "source": "jimu-dse/docs/skills/isa/self-verify.zh.md"
+        }
+      },
+      "version": "2.0.0"
+    },
+    "vrf-cache": {
+      "archive": "jimu-dse/docs/skills/versions/vrf-cache/2.11.0.md",
+      "name": "vrf-cache",
+      "opencode_path": ".opencode/skills/vrf-cache/SKILL.md",
+      "sha256": "236544229c5db2413d73e85c8e437801ec370dc9725a4491d37843432a53c5a4",
+      "source": "jimu-dse/docs/skills/isa/vrf-cache.md",
+      "translations": {
+        "zh": {
+          "archive": "jimu-dse/docs/skills/versions/vrf-cache/2.11.0.zh.md",
+          "opencode_path": ".opencode/skills/vrf-cache/SKILL.zh.md",
+          "sha256": "6d65b63b248c69ef5955d1d7d49aa9b15b4464209c07173d3cc1e8da7358535f",
+          "source": "jimu-dse/docs/skills/isa/vrf-cache.zh.md"
+        }
+      },
+      "version": "2.11.0"
+    }
+  },
+  "source_of_truth": "jimu-dse/docs/skills/isa/*.md"
+}

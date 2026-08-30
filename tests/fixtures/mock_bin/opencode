@@ -1,0 +1,31 @@
+#!/usr/bin/env python3
+"""Deterministic OpenCode stand-in for closed-loop integration smoke tests."""
+
+from __future__ import annotations
+
+import os
+from pathlib import Path
+import shutil
+import sys
+
+
+def main() -> int:
+    source_text = os.environ.get("JIMU_MOCK_CANDIDATE", "")
+    target_text = os.environ.get(
+        "JIMU_MOCK_TARGET", "firmware/bert/bert_layer.c"
+    )
+    if not source_text:
+        print("mock opencode: JIMU_MOCK_CANDIDATE is required", file=sys.stderr)
+        return 2
+    source = Path(source_text)
+    target = Path(target_text)
+    if not source.is_file():
+        print(f"mock opencode: candidate not found: {source}", file=sys.stderr)
+        return 2
+    shutil.copyfile(source, target)
+    print(f"mock opencode: copied {source} to {target}")
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())

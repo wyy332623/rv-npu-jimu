@@ -1,6 +1,5 @@
 ---
 name: inc-folding
-version: 1.0.0
 description: Fold V_WR_DRAM+V_RD_DRAM save/load pairs into INC variants on NPU firmware
 license: MIT
 ---

@@ -1,31 +1,6 @@
-# Local Python environments and caches
-venv/
-venv_*/
-__pycache__/
-*.py[cod]
-.pytest_cache/
-/.build/
-
-# Reproducible native/firmware build outputs
-_build/
-_out/
-libnpukernels.so
-firmware/build*/
-firmware/*.elf
-firmware/*.elf.*
-adderboard/firmware/build_*/
-
-# Local edit and validation backups
-*.bak
-*.new
-*.orig
-*.saved
-*.before_manual_validation
-~$*.docx
-
-# Closed-loop runs are local evidence, not source files. Promote durable
-# conclusions into jimu-dse/docs/ before committing them.
+# Root-level local outputs
+/.pytest_cache/
+/_build/
+/_out/
+/venv_jimu/
 /jimu-dse/results/
-
-# Locally generated presentation artifacts
-/jimu-dse/docs/reports/*.docx
